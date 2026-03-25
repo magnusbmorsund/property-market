@@ -315,6 +315,18 @@ def estimate_rent_for_municipality(municipality_code: str,
     if rent_data.empty:
         return np.nan
 
+    # Ensure zone_code is string for consistent matching
+    # (SSB JSON-stat parsing may produce float64 zone codes like 1.01)
+    # Normalize: float 5.0 → "5.00", 20.0 → "20.00" to match our lookup strings
+    rent_data = rent_data.copy()
+    def _norm_zone(v):
+        s = str(v)
+        if "." in s:
+            integer, decimal = s.split(".", 1)
+            return f"{integer}.{decimal.ljust(2, '0')}"
+        return s
+    rent_data["zone_code"] = rent_data["zone_code"].apply(_norm_zone)
+
     # Try direct municipality-to-zone mapping
     zone = _MUNICIPALITY_TO_SSB_ZONE.get(municipality_code)
 
