@@ -92,11 +92,13 @@ def score_properties(
 
     # ── A. Rental Yield Signals ──────────────────────────────────────────
 
-    # y1: Gross rental yield
+    # y1: Net rental yield (subtract felleskost from rental income)
     if "gross_yield_pct" not in df.columns:
         if "estimated_annual_rent" in df.columns and "total_price_calc" in df.columns:
+            felleskost_annual = df.get("common_costs_monthly", 0) * 12
+            net_annual_rent = df["estimated_annual_rent"] - felleskost_annual
             df["gross_yield_pct"] = (
-                df["estimated_annual_rent"] / df["total_price_calc"] * 100
+                net_annual_rent / df["total_price_calc"] * 100
             ).replace([np.inf, -np.inf], np.nan)
         else:
             df["gross_yield_pct"] = np.nan

@@ -19,8 +19,8 @@ objectives however you choose.
 Methodology
 ───────────
 Each signal is normalised to [0, 1] within its own country pool (min-max),
-so Norway and Sweden are ranked separately (different currencies, different
-absolute price levels).
+so regions are ranked within Norway (normalised to the same currency and
+price level).
 
 Signals used
 ────────────
@@ -117,23 +117,17 @@ def _build_feature_table() -> pd.DataFrame:
     """
 
     # ── Price growth ──────────────────────────────────────────────────────────
-    no_growth = _load("norway_price_growth")
-    se_growth = _load("sweden_price_growth")
-    growth = pd.concat([no_growth, se_growth], ignore_index=True)
+    growth = _load("norway_price_growth")
 
     # ── Rental yield ──────────────────────────────────────────────────────────
-    no_yield = _load("norway_rental_yield")
-    se_yield = _load("sweden_rental_yield")
-    yield_df = pd.concat([no_yield, se_yield], ignore_index=True)
+    yield_df = _load("norway_rental_yield")
     # yield is region-level only (no dwelling_type dimension) — will merge on region
     yield_df = yield_df[["country", "region_code", "region",
                           "avg_monthly_rent", "avg_price_sqm",
                           "estimated_price", "gross_yield_pct"]]
 
     # ── Building rate ─────────────────────────────────────────────────────────
-    no_br = _load("norway_building_rate")
-    se_br = _load("sweden_building_rate")
-    br = pd.concat([no_br, se_br], ignore_index=True)
+    br = _load("norway_building_rate")
     # Take most recent year
     br_latest = (
         br.sort_values("year")
@@ -144,9 +138,7 @@ def _build_feature_table() -> pd.DataFrame:
     )
 
     # ── Completion ratio ──────────────────────────────────────────────────────
-    no_cr = _load("norway_completion_ratio")
-    se_cr = _load("sweden_completion_ratio")
-    cr = pd.concat([no_cr, se_cr], ignore_index=True)
+    cr = _load("norway_completion_ratio")
     cr_latest = (
         cr.sort_values("year")
           .groupby(["country", "region_code"])
@@ -156,9 +148,7 @@ def _build_feature_table() -> pd.DataFrame:
     )
 
     # ── Permit momentum ───────────────────────────────────────────────────────
-    no_mom = _load("norway_permit_momentum")
-    se_mom = _load("sweden_permit_momentum")
-    mom = pd.concat([no_mom, se_mom], ignore_index=True)
+    mom = _load("norway_permit_momentum")
     # Latest 12m momentum
     mom_latest = (
         mom.sort_values("period")
@@ -170,9 +160,7 @@ def _build_feature_table() -> pd.DataFrame:
     )
 
     # ── Price volatility (from index) ─────────────────────────────────────────
-    no_idx = _load("norway_price_index")
-    se_idx = _load("sweden_price_index")
-    idx = pd.concat([no_idx, se_idx], ignore_index=True)
+    idx = _load("norway_price_index")
     volatility = (
         idx.groupby(["country", "region_code", "dwelling_type"])["growth_qoq"]
            .std()
@@ -430,7 +418,7 @@ class InvestmentModel:
         scores        : output of .score()
         objective     : 'yield', 'growth', or 'balanced'
         top_n         : number of top BUY recommendations to return
-        country       : filter to 'NO' or 'SE' (None = both)
+        country       : filter to specific country code (e.g. 'NO')
         min_yield_pct : minimum gross_yield_pct to include (e.g. 4.0)
         min_growth_pct: minimum growth_1Y_ann to include (e.g. 3.0)
         """

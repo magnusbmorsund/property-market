@@ -44,6 +44,38 @@ for m in _MUNICIPALITIES["municipalities"]:
     clean = re.sub(r"[^a-zæøå0-9 ]", "", m["name"].lower()).strip()
     _ALIASES[clean] = m["code"]
 
+# Place names that aren't municipality names but map to known municipalities
+_PLACE_ALIASES = {
+    "rørvik": "5059",      # Nærøysund
+    "kolvereid": "5059",   # Nærøysund
+    "jessheim": "3209",    # Ullensaker
+    "ski": "3207",         # Nordre Follo
+    "sandvika": "3201",    # Bærum
+    "mjøndalen": "3301",   # Drammen
+    "hønefoss": "3305",    # Ringerike
+    "mo i rana": "1833",   # Rana
+    "harstad": "5503",     # Harstad
+    "sortland": "1870",    # Sortland
+    "finnsnes": "5526",    # Senja
+    "alta": "5601",        # Alta
+    "hammerfest": "5603",  # Hammerfest
+    "kirkenes": "5605",    # Sør-Varanger
+    "bryne": "1121",       # Time
+    "mandal": "4062",      # Lindesnes
+    "porsgrunn": "3901",   # Porsgrunn
+    "skien": "3903",       # Skien
+    "moss": "3103",        # Moss
+    "fredrikstad": "3107", # Fredrikstad
+    "sarpsborg": "3105",   # Sarpsborg
+    "halden": "3101",      # Halden
+    "førde": "4237",       # Sunnfjord
+    "sogndal": "4230",     # Sogndal
+    "stord": "4203",       # Stord
+    "voss": "4208",        # Voss herad — mapped to Ullensvang area
+    "odda": "4208",        # Ullensvang
+}
+_ALIASES.update(_PLACE_ALIASES)
+
 # Code → region (fylke)
 _CODE_TO_REGION = {m["code"]: m["region_code"] for m in _MUNICIPALITIES["municipalities"]}
 _CODE_TO_REGION_NAME = {m["code"]: m["region_name"] for m in _MUNICIPALITIES["municipalities"]}
@@ -51,8 +83,8 @@ _CODE_TO_REGION_NAME = {m["code"]: m["region_name"] for m in _MUNICIPALITIES["mu
 # Code → SSB price zone (for rent estimation)
 _CODE_TO_ZONE = {m["code"]: m.get("rent_zone", "99") for m in _MUNICIPALITIES["municipalities"]}
 
-# All municipality names for fuzzy matching
-_ALL_NAMES = list(_NAME_TO_CODE.keys())
+# All municipality and place names for fuzzy matching
+_ALL_NAMES = list(set(list(_NAME_TO_CODE.keys()) + list(_PLACE_ALIASES.keys())))
 
 
 def map_address_to_municipality(address: str) -> tuple[str, str]:
@@ -85,11 +117,11 @@ def map_address_to_municipality(address: str) -> tuple[str, str]:
             code = _ALIASES[clean]
             return (code, _CODE_TO_NAME[code])
 
-    # Strategy 2: Check if any known municipality name appears as substring
+    # Strategy 2: Check if any known municipality name appears as a whole word
     addr_lower = address.lower()
     # Sort by name length descending to match longest first (e.g., "Oslo" before "Os")
     for name in sorted(_ALL_NAMES, key=len, reverse=True):
-        if len(name) >= 3 and name in addr_lower:
+        if len(name) >= 3 and re.search(r'(?<!\w)' + re.escape(name) + r'(?!\w)', addr_lower):
             code = _NAME_TO_CODE[name]
             return (code, _CODE_TO_NAME[code])
 

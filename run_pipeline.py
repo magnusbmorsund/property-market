@@ -302,10 +302,12 @@ def step_enrich(listings: pd.DataFrame,
         idx_data = index_signals[idx_cols].rename(columns=idx_rename)
         enriched = enriched.merge(idx_data, on="index_region_code", how="left")
 
-    # Compute gross yield
+    # Compute net yield (subtract felleskost from rental income)
     if "total_price_calc" in enriched.columns and "estimated_annual_rent" in enriched.columns:
+        felleskost_annual = enriched.get("common_costs_monthly", 0) * 12
+        net_annual_rent = enriched["estimated_annual_rent"] - felleskost_annual
         enriched["gross_yield_pct"] = (
-            enriched["estimated_annual_rent"] / enriched["total_price_calc"] * 100
+            net_annual_rent / enriched["total_price_calc"] * 100
         ).replace([np.inf, -np.inf], np.nan).round(2)
 
     logger.info(f"[pipeline] Enriched {len(enriched)} listings with region data")
@@ -393,8 +395,10 @@ def main():
     # ── Output ───────────────────────────────────────────────────────────
     _print_results(scored, args.top_n)
 
-    # Export to CSV
-    export_path = Path(args.export) if args.export else OUTPUT_DIR / "property_scores.csv"
+    # Export to CSV (timestamped to preserve history)
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M")
+    export_path = Path(args.export) if args.export else OUTPUT_DIR / f"property_scores_{timestamp}.csv"
     export_cols = [
         "rank", "recommendation", "composite_score", "yield_score", "growth_score",
         "risk_score", "risk_label",
