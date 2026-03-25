@@ -122,7 +122,7 @@ def map_address_to_municipality(address: str) -> tuple[str, str]:
     # Sort by name length descending to match longest first (e.g., "Oslo" before "Os")
     for name in sorted(_ALL_NAMES, key=len, reverse=True):
         if len(name) >= 3 and re.search(r'(?<!\w)' + re.escape(name) + r'(?!\w)', addr_lower):
-            code = _NAME_TO_CODE[name]
+            code = _ALIASES[name]
             return (code, _CODE_TO_NAME[code])
 
     # Strategy 3: Fuzzy match on the last meaningful part
@@ -132,7 +132,7 @@ def map_address_to_municipality(address: str) -> tuple[str, str]:
             continue
         matches = difflib.get_close_matches(clean, _ALL_NAMES, n=1, cutoff=0.7)
         if matches:
-            code = _NAME_TO_CODE[matches[0]]
+            code = _ALIASES[matches[0]]
             return (code, _CODE_TO_NAME[code])
 
     logger.debug(f"[mapper] Could not map address: {address}")
