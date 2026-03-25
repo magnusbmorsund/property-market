@@ -287,7 +287,7 @@ _MUNICIPALITY_TO_SSB_ZONE = {
     "3236": "2.02",  # Hurdal
 
     # Bergen zones
-    "4601": "3.01",  # Bergen — Bergenhus (central)
+    "4201": "3.01",  # Bergen — Bergenhus (central)
 
     # Trondheim zones
     "5001": "4.01",  # Trondheim — central
@@ -303,59 +303,85 @@ _MUNICIPALITY_TO_SSB_ZONE = {
 }
 
 
+def _norm_zone(v):
+    """Normalize zone code: float 5.0 → '5.00', 20.0 → '20.00'."""
+    s = str(v)
+    if "." in s:
+        integer, decimal = s.split(".", 1)
+        return f"{integer}.{decimal.ljust(2, '0')}"
+    return s
+
+
+def _interpolate_rent_by_sqm(zone_rows: pd.DataFrame, sqm: float) -> float:
+    """
+    Interpolate monthly rent for a given sqm from SSB zone data.
+
+    zone_rows must have 'sqm' and 'monthly_rent' columns.
+    Uses linear interpolation between the two nearest size brackets.
+    """
+    if zone_rows.empty or "sqm" not in zone_rows.columns:
+        return float(zone_rows["monthly_rent"].iloc[0]) if not zone_rows.empty else np.nan
+
+    zr = zone_rows.dropna(subset=["sqm", "monthly_rent"]).sort_values("sqm")
+    if zr.empty:
+        return np.nan
+
+    sqm_vals = zr["sqm"].values
+    rent_vals = zr["monthly_rent"].values
+
+    # Clamp to range
+    if sqm <= sqm_vals[0]:
+        return float(rent_vals[0])
+    if sqm >= sqm_vals[-1]:
+        return float(rent_vals[-1])
+
+    # Linear interpolation
+    return float(np.interp(sqm, sqm_vals, rent_vals))
+
+
 def estimate_rent_for_municipality(municipality_code: str,
                                     rent_data: pd.DataFrame,
                                     sqm: float = 70.0) -> float:
     """
-    Estimate monthly rent for a property in a given municipality.
+    Estimate monthly rent for a property in a given municipality,
+    interpolated by property size (sqm).
 
-    Uses SSB table 09897 rent zones. Falls back to size-based zone
-    (20.00 for 20k+ cities, 21.00 for 2k-20k, 22.00 for smaller).
+    Uses SSB table 09897 rent zones with multiple size brackets.
+    Falls back to population-based generic zones.
     """
     if rent_data.empty:
         return np.nan
 
     # Ensure zone_code is string for consistent matching
-    # (SSB JSON-stat parsing may produce float64 zone codes like 1.01)
-    # Normalize: float 5.0 → "5.00", 20.0 → "20.00" to match our lookup strings
     rent_data = rent_data.copy()
-    def _norm_zone(v):
-        s = str(v)
-        if "." in s:
-            integer, decimal = s.split(".", 1)
-            return f"{integer}.{decimal.ljust(2, '0')}"
-        return s
     rent_data["zone_code"] = rent_data["zone_code"].apply(_norm_zone)
 
-    # Try direct municipality-to-zone mapping
+    # Resolve SSB zone for this municipality
     zone = _MUNICIPALITY_TO_SSB_ZONE.get(municipality_code)
 
-    if zone:
-        zone_rows = rent_data[rent_data["zone_code"] == zone]
-        if not zone_rows.empty:
-            return float(zone_rows["monthly_rent"].iloc[0])
+    if not zone:
+        # Fallback: use population-based generic zones
+        fallback_zone = get_rent_zone(municipality_code)
+        zone_map = {
+            "01": "1.01", "02": "1.02", "03": "1.03", "04": "1.04",
+            "05": "2.01", "06": "2.02",
+            "07": "3.01", "08": "4.01", "09": "5.00", "10": "6.00",
+            "11": "7.00", "12": "20.00", "13": "20.00", "14": "21.00",
+            "15": "21.00", "16": "22.00", "99": "21.00",
+        }
+        zone = zone_map.get(fallback_zone, "21.00")
 
-    # Fallback: use population-based generic zones
-    # Zone 20.00 = cities 20k+, 21.00 = 2k-20k, 22.00 = <2k
-    # Default to medium city zone
-    fallback_zone = get_rent_zone(municipality_code)
+    zone_rows = rent_data[rent_data["zone_code"] == zone]
 
-    # Map old zone codes to SSB zone codes
-    zone_map = {
-        "01": "1.01", "02": "1.02", "03": "1.03", "04": "1.04",
-        "05": "2.01", "06": "2.02",
-        "07": "3.01", "08": "4.01", "09": "5.00", "10": "6.00",
-        "11": "7.00", "12": "20.00", "13": "20.00", "14": "21.00",
-        "15": "21.00", "16": "22.00", "99": "21.00",
-    }
-    ssb_zone = zone_map.get(fallback_zone, "21.00")
-    zone_rows = rent_data[rent_data["zone_code"] == ssb_zone]
     if not zone_rows.empty:
-        return float(zone_rows["monthly_rent"].iloc[0])
+        return _interpolate_rent_by_sqm(zone_rows, sqm)
 
-    # Final fallback: median of all zones
-    avg = rent_data["monthly_rent"].median()
-    return float(avg) if not np.isnan(avg) else np.nan
+    # Final fallback: interpolate from median across all zones per size
+    if "sqm" in rent_data.columns:
+        median_by_sqm = rent_data.groupby("sqm")["monthly_rent"].median().reset_index()
+        return _interpolate_rent_by_sqm(median_by_sqm, sqm)
+
+    return float(rent_data["monthly_rent"].median())
 
 
 def enrich_listings_with_regions(listings_df: pd.DataFrame) -> pd.DataFrame:

@@ -211,14 +211,20 @@ def fetch_price_index() -> pd.DataFrame:
 
 def fetch_predicted_rent() -> pd.DataFrame:
     """
-    Table 09897: Predicted monthly rent by price zone.
+    Table 09897: Predicted monthly rent by price zone and size.
+
+    Fetches multiple room/size combos (30-140sqm) so rent can be
+    interpolated based on actual property size.
     """
-    # Soner2: zone codes like "01.01", "01.02", etc.
-    # AntRomBRA: room/area combos like "1.030" (1 room, 30sqm), pick a typical 2-room ~50sqm
+    # Fetch a spread of sizes: 30, 50, 70, 90, 120, 140 sqm
+    size_codes = ["1.030", "2.050", "3.070", "3.090", "4.120", "4.140"]
+    # Map code → sqm for downstream interpolation
+    size_sqm = {"1.030": 30, "2.050": 50, "3.070": 70, "3.090": 90, "4.120": 120, "4.140": 140}
+
     query = {
         "query": [
             {"code": "Soner2", "selection": {"filter": "all", "values": ["*"]}},
-            {"code": "AntRomBRA", "selection": {"filter": "item", "values": ["2.050"]}},
+            {"code": "AntRomBRA", "selection": {"filter": "item", "values": size_codes}},
             {"code": "ContentsCode", "selection": {"filter": "item", "values": ["Husleie"]}},
             {"code": "Tid", "selection": {"filter": "top", "values": ["1"]}},
         ],
@@ -235,13 +241,25 @@ def fetch_predicted_rent() -> pd.DataFrame:
             rename[col] = "zone_code"
         elif "Soner2" in col:
             rename[col] = "zone"
+        elif "AntRomBRA" in col and "_code" in col:
+            rename[col] = "size_code"
+        elif "AntRomBRA" in col:
+            rename[col] = "size_desc"
         elif col == "value":
             rename[col] = "monthly_rent"
     df = df.rename(columns=rename)
 
-    cols = [c for c in ["zone_code", "zone", "monthly_rent"] if c in df.columns]
+    cols = [c for c in ["zone_code", "zone", "size_code", "monthly_rent"] if c in df.columns]
     df = df[cols].dropna(subset=["monthly_rent"])
     df["monthly_rent"] = pd.to_numeric(df["monthly_rent"], errors="coerce")
+
+    # Add sqm column for interpolation
+    # size_code may be float (1.03) or string ("1.030") depending on JSON-stat parsing
+    if "size_code" in df.columns:
+        float_size_sqm = {float(k): v for k, v in size_sqm.items()}
+        df["sqm"] = df["size_code"].map(float_size_sqm)
+        if df["sqm"].isna().all():
+            df["sqm"] = df["size_code"].astype(str).map(size_sqm)
 
     return df
 
