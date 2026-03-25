@@ -302,12 +302,11 @@ def step_enrich(listings: pd.DataFrame,
         idx_data = index_signals[idx_cols].rename(columns=idx_rename)
         enriched = enriched.merge(idx_data, on="index_region_code", how="left")
 
-    # Compute net yield (subtract felleskost from rental income)
+    # Compute gross yield (SSB rents are already conservative/below-market,
+    # so we treat them as approximate net figures without deducting felleskost)
     if "total_price_calc" in enriched.columns and "estimated_annual_rent" in enriched.columns:
-        felleskost_annual = enriched.get("common_costs_monthly", 0) * 12
-        net_annual_rent = enriched["estimated_annual_rent"] - felleskost_annual
         enriched["gross_yield_pct"] = (
-            net_annual_rent / enriched["total_price_calc"] * 100
+            enriched["estimated_annual_rent"] / enriched["total_price_calc"] * 100
         ).replace([np.inf, -np.inf], np.nan).round(2)
 
     logger.info(f"[pipeline] Enriched {len(enriched)} listings with region data")

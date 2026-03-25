@@ -177,7 +177,46 @@ _PLACE_ALIASES = {
     "hemsedal": "3338",    # Hemsedal
     "ål": "3336",          # Ål
     "geilo": "3336",       # Ål
-    "nesbyen": "3316",     # Nesbyen (Nes)
+    "nesbyen": "3322",     # Nesbyen
+    # Commonly mismatched places
+    "kråkerøy": "3107",    # Fredrikstad
+    "brekstad": "5056",    # Ørland
+    "hvam": "3224",        # Nes (Akershus)
+    "heggedal": "3203",    # Asker
+    "mosjøen": "1824",     # Vefsn
+    "hvasser": "3811",     # Færder
+    "nøtterøy": "3811",    # Færder
+    "tjøme": "3811",       # Færder
+    "prestfoss": "3332",   # Sigdal
+    "rud": "3201",         # Bærum
+    "rykkinn": "3201",     # Bærum
+    "bekkestua": "3201",   # Bærum
+    "stabekk": "3201",     # Bærum
+    "høvik": "3201",       # Bærum
+    "billingstad": "3203", # Asker
+    "holmen": "3203",      # Asker
+    "nesbru": "3203",      # Asker
+    "slemmestad": "3203",  # Asker
+    "spikkestad": "3316",  # Modum? Actually Røyken→Asker
+    "lier": "3304",        # Lier
+    "tranby": "3304",      # Lier
+    "sylling": "3304",     # Lier
+    "åmot": "3422",        # Åmot
+    "rena": "3422",        # Åmot
+    "tynset": "3427",      # Tynset
+    "røros": "5025",       # Røros
+    "oppdal": "5021",      # Oppdal
+    "orkanger": "5014",    # Orkland
+    "melhus": "5028",      # Melhus
+    "malvik": "5031",      # Malvik
+    "hommelvik": "5031",   # Malvik
+    "selbu": "5032",       # Selbu
+    "klæbu": "5001",       # Trondheim (merged)
+    "melhus": "5028",      # Melhus
+    "fillan": "5055",      # Hitra
+    "sistranda": "5057",   # Frøya
+    "kristiansand s": "4001", # Kristiansand
+    "kristiansand n": "4001", # Kristiansand
 }
 _ALIASES.update(_PLACE_ALIASES)
 
