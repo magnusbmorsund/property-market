@@ -73,6 +73,111 @@ _PLACE_ALIASES = {
     "stord": "4203",       # Stord
     "voss": "4208",        # Voss herad — mapped to Ullensvang area
     "odda": "4208",        # Ullensvang
+    # Smaller towns / neighbourhoods
+    "hokksund": "3314",    # Øvre Eiker
+    "mysen": "3118",       # Indre Østfold
+    "askim": "3118",       # Indre Østfold
+    "fosnavåg": "1515",    # Herøy (Møre og Romsdal)
+    "søgne": "4001",       # Kristiansand
+    "ellingsøy": "1507",   # Ålesund
+    "fyllingsdalen": "4201", # Bergen
+    "førresfjorden": "1146", # Tysvær
+    "fosslandsosen": "5054", # Heim
+    "flekkerøy": "4001",  # Kristiansand
+    "randesund": "4001",   # Kristiansand
+    "vågsbygd": "4001",   # Kristiansand
+    "lund": "4001",        # Kristiansand (bydel)
+    "ågotnes": "4631",     # Øygarden
+    "straume": "4631",     # Øygarden
+    "sotra": "4631",       # Øygarden
+    "askøy": "4218",       # Askøy
+    "kleppestø": "4218",   # Askøy
+    "arna": "4201",        # Bergen
+    "fana": "4201",        # Bergen
+    "åsane": "4201",       # Bergen
+    "ytrebygda": "4201",   # Bergen
+    "laksevåg": "4201",    # Bergen
+    "nesttun": "4201",     # Bergen
+    "råholt": "3209",      # Ullensaker
+    "kløfta": "3209",      # Ullensaker
+    "ås": "3218",          # Ås
+    "drøbak": "3216",      # Frogn
+    "langhus": "3207",     # Nordre Follo
+    "kolbotn": "3207",     # Nordre Follo
+    "lørenskog": "3211",   # Lørenskog
+    "fjellhamar": "3211",  # Lørenskog
+    "rælingen": "3213",    # Rælingen
+    "nittedal": "3233",    # Nittedal
+    "nesoddtangen": "3214", # Nesodden
+    "vinterbro": "3218",   # Ås
+    "heimdal": "5001",     # Trondheim
+    "byåsen": "5001",      # Trondheim
+    "tiller": "5001",      # Trondheim
+    "ranheim": "5001",     # Trondheim
+    "lade": "5001",        # Trondheim
+    "saupstad": "5001",    # Trondheim
+    "moholt": "5001",      # Trondheim
+    "lambertseter": "0301", # Oslo
+    "grorud": "0301",      # Oslo
+    "stovner": "0301",     # Oslo
+    "furuset": "0301",     # Oslo
+    "manglerud": "0301",   # Oslo
+    "nordstrand": "0301",  # Oslo
+    "oppsal": "0301",      # Oslo
+    "bøler": "0301",       # Oslo
+    "holmlia": "0301",     # Oslo
+    "mortensrud": "0301",  # Oslo
+    "tåsen": "0301",       # Oslo
+    "majorstuen": "0301",  # Oslo
+    "grünerløkka": "0301", # Oslo
+    "frogner": "0301",     # Oslo
+    "sagene": "0301",      # Oslo
+    "ullern": "0301",      # Oslo
+    "hundvåg": "1103",     # Stavanger
+    "storhaug": "1103",    # Stavanger
+    "hillevåg": "1103",    # Stavanger
+    "tasta": "1103",       # Stavanger
+    "madla": "1103",       # Stavanger
+    "hinna": "1103",       # Stavanger
+    "tananger": "1124",    # Sola
+    "sola": "1124",        # Sola
+    "randaberg": "1127",   # Randaberg
+    "kopervik": "1149",    # Karmøy
+    "haugesund": "1106",   # Haugesund
+    "lyngdal": "4225",     # Lyngdal
+    "farsund": "4206",     # Farsund
+    "vennesla": "4223",    # Vennesla
+    "songdalen": "4001",   # Kristiansand
+    "lillesand": "4215",   # Lillesand
+    "tvedestrand": "4213", # Tvedestrand
+    "risør": "4211",       # Risør
+    "notodden": "3808",    # Notodden
+    "rjukan": "3812",      # Tinn
+    "bø": "3817",          # Bø
+    "horten": "3801",      # Horten
+    "holmestrand": "3802", # Holmestrand
+    "stavern": "3805",     # Larvik
+    "stathelle": "3814",   # Bamble
+    "brevik": "3901",      # Porsgrunn
+    "langesund": "3814",   # Bamble
+    "kongsvinger": "3401",  # Kongsvinger
+    "moelv": "3412",       # Ringsaker
+    "brumunddal": "3412",  # Ringsaker
+    "otta": "3434",        # Sel
+    "vinstra": "3435",     # Nord-Fron
+    "fagernes": "3449",    # Nord-Aurdal
+    "leira": "3441",       # Lom
+    "dombås": "3432",      # Dovre
+    "raufoss": "3415",     # Vestre Toten
+    "gran": "3446",        # Gran
+    "jevnaker": "3053",    # Jevnaker
+    "lunner": "3054",      # Lunner
+    "flå": "3313",         # Flå
+    "gol": "3340",         # Gol
+    "hemsedal": "3338",    # Hemsedal
+    "ål": "3336",          # Ål
+    "geilo": "3336",       # Ål
+    "nesbyen": "3316",     # Nesbyen (Nes)
 }
 _ALIASES.update(_PLACE_ALIASES)
 
@@ -191,7 +296,7 @@ _MUNICIPALITY_TO_SSB_ZONE = {
     "1103": "5.00",
 
     # Kristiansand
-    "4204": "6.00",
+    "4001": "6.00",  # Kristiansand
 
     # Tromsø
     "5501": "7.00",
