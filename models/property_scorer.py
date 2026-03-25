@@ -39,17 +39,19 @@ YIELD_WEIGHTS = {
 }
 
 GROWTH_WEIGHTS = {
-    "g1_growth_1y": 0.40,
-    "g2_growth_3y": 0.30,
-    "g3_index_momentum": 0.30,
+    "g1_growth_1y": 0.30,
+    "g2_growth_3y": 0.20,
+    "g3_index_momentum": 0.20,
+    "g4_wage_growth": 0.30,       # wage growth drives demand
 }
 
 RISK_WEIGHTS = {
-    "r1_interest_sensitivity": 0.25,
-    "r2_job_vulnerability": 0.25,
-    "r3_price_volatility": 0.20,
-    "r4_monetary_tightening": 0.15,
+    "r1_interest_sensitivity": 0.20,
+    "r2_job_vulnerability": 0.20,
+    "r3_price_volatility": 0.15,
+    "r4_monetary_tightening": 0.10,
     "r5_debt_burden": 0.15,
+    "r6_construction_pressure": 0.20,  # high building = oversupply risk
 }
 
 
@@ -140,11 +142,18 @@ def score_properties(
     else:
         df["_g3"] = 0.5
 
+    # g4: Wage growth in the municipality — higher wage growth = stronger demand
+    if "wage_growth_1y" in df.columns:
+        df["_g4"] = _minmax(df["wage_growth_1y"])
+    else:
+        df["_g4"] = 0.5
+
     # Growth composite
     df["growth_score_raw"] = (
         GROWTH_WEIGHTS["g1_growth_1y"] * df["_g1"] +
         GROWTH_WEIGHTS["g2_growth_3y"] * df["_g2"] +
-        GROWTH_WEIGHTS["g3_index_momentum"] * df["_g3"]
+        GROWTH_WEIGHTS["g3_index_momentum"] * df["_g3"] +
+        GROWTH_WEIGHTS["g4_wage_growth"] * df["_g4"]
     )
 
     # ── C. Risk Signals ──────────────────────────────────────────────────
@@ -184,13 +193,20 @@ def score_properties(
     else:
         df["_r5"] = 0.5
 
+    # r6: Construction supply pressure — high permits per capita = oversupply risk
+    if "permits_per_1000" in df.columns:
+        df["_r6"] = _minmax(df["permits_per_1000"])  # more building = more supply = riskier
+    else:
+        df["_r6"] = 0.5
+
     # Risk composite
     df["risk_score"] = (
         RISK_WEIGHTS["r1_interest_sensitivity"] * df["_r1"] +
         RISK_WEIGHTS["r2_job_vulnerability"] * df["_r2"] +
         RISK_WEIGHTS["r3_price_volatility"] * df["_r3"] +
         RISK_WEIGHTS["r4_monetary_tightening"] * df["_r4"] +
-        RISK_WEIGHTS["r5_debt_burden"] * df["_r5"]
+        RISK_WEIGHTS["r5_debt_burden"] * df["_r5"] +
+        RISK_WEIGHTS["r6_construction_pressure"] * df["_r6"]
     )
 
     # ── Composite Score ──────────────────────────────────────────────────

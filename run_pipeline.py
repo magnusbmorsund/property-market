@@ -405,6 +405,8 @@ def main():
         "common_costs_monthly", "fellesgjeld",
         "gross_yield_pct", "estimated_monthly_rent",
         "price_growth_1y", "price_growth_3y",
+        "wage_growth_1y", "latest_wage",
+        "permits_per_1000", "permit_momentum",
         "debt_burden_pct", "employment_hhi",
         "population",
     ]

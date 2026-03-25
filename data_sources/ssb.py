@@ -428,6 +428,109 @@ def fetch_mortgage_rates() -> pd.DataFrame:
     return df
 
 
+def fetch_wages() -> pd.DataFrame:
+    """
+    Table 12852: Monthly earnings by municipality.
+    Mean wages, both sexes, all ages, full-time, residence-based.
+    Returns last 5 years for growth calculation.
+    """
+    query = {
+        "query": [
+            {"code": "Region", "selection": {"filter": "all", "values": ["*"]}},
+            {"code": "MaaleMetode", "selection": {"filter": "item", "values": ["02"]}},
+            {"code": "ArbBostedRegion", "selection": {"filter": "item", "values": ["2"]}},
+            {"code": "Kjonn", "selection": {"filter": "item", "values": ["0"]}},
+            {"code": "Alder", "selection": {"filter": "item", "values": ["Ialt"]}},
+            {"code": "AvtaltVanlig", "selection": {"filter": "item", "values": ["5"]}},
+            {"code": "ContentsCode", "selection": {"filter": "item", "values": ["Manedslonn"]}},
+            {"code": "Tid", "selection": {"filter": "top", "values": ["5"]}},
+        ],
+        "response": {"format": "json-stat2"},
+    }
+    df = _query_ssb(SSB_TABLES["wages"], query)
+
+    if df.empty:
+        return df
+
+    # Rename — be specific to avoid matching ArbBostedRegion
+    df = df.rename(columns={
+        "Region_code": "municipality_code",
+        "Region": "municipality",
+        "Tid_code": "year",
+        "value": "monthly_wage",
+    })
+
+    cols = [c for c in ["municipality_code", "municipality", "year", "monthly_wage"] if c in df.columns]
+    df = df[cols].dropna(subset=["monthly_wage"])
+    df["monthly_wage"] = pd.to_numeric(df["monthly_wage"], errors="coerce")
+
+    # Filter to current municipalities
+    df = df[~df["municipality"].str.contains(r"\(-\d{4}\)|\(\d{4}-\d{4}\)", regex=True, na=False)]
+    df["municipality_clean"] = (
+        df["municipality"]
+        .str.replace(r"\s*\(.*\)$", "", regex=True)
+        .str.replace(r"\s*-\s+\S+$", "", regex=True)
+        .str.strip()
+        .str.lower()
+    )
+
+    return df
+
+
+def fetch_construction() -> pd.DataFrame:
+    """
+    Table 05889: Building permits (igangsatte boliger) by municipality, quarterly.
+    Returns last 8 quarters for trend calculation.
+    """
+    query = {
+        "query": [
+            {"code": "Region", "selection": {"filter": "all", "values": ["*"]}},
+            {"code": "Byggeareal", "selection": {"filter": "item", "values": [
+                "111", "112", "131", "141", "142", "143"
+            ]}},
+            {"code": "ContentsCode", "selection": {"filter": "item", "values": ["Igangsatte"]}},
+            {"code": "Tid", "selection": {"filter": "top", "values": ["8"]}},
+        ],
+        "response": {"format": "json-stat2"},
+    }
+    df = _query_ssb(SSB_TABLES["construction"], query)
+
+    if df.empty:
+        return df
+
+    rename = {}
+    for col in df.columns:
+        if "Region" in col and "_code" in col:
+            rename[col] = "municipality_code"
+        elif "Region" in col:
+            rename[col] = "municipality"
+        elif "Tid" in col and "_code" in col:
+            rename[col] = "quarter"
+        elif col == "value":
+            rename[col] = "permits"
+    df = df.rename(columns=rename)
+
+    cols = [c for c in ["municipality_code", "municipality", "quarter", "permits"] if c in df.columns]
+    df = df[cols]
+    df["permits"] = pd.to_numeric(df.get("permits", pd.Series(dtype=float)), errors="coerce")
+
+    # Sum across building types per municipality per quarter
+    group_cols = [c for c in ["municipality_code", "municipality", "quarter"] if c in df.columns]
+    df = df.groupby(group_cols, as_index=False)["permits"].sum()
+
+    # Filter to current municipalities
+    df = df[~df["municipality"].str.contains(r"\(-\d{4}\)|\(\d{4}-\d{4}\)", regex=True, na=False)]
+    df["municipality_clean"] = (
+        df["municipality"]
+        .str.replace(r"\s*\(.*\)$", "", regex=True)
+        .str.replace(r"\s*-\s+\S+$", "", regex=True)
+        .str.strip()
+        .str.lower()
+    )
+
+    return df
+
+
 # ── Region feature assembly ──────────────────────────────────────────────────
 
 def _compute_price_growth(price_df: pd.DataFrame) -> pd.DataFrame:
@@ -478,6 +581,107 @@ def _compute_price_growth(price_df: pd.DataFrame) -> pd.DataFrame:
         })
 
     return pd.DataFrame(results)
+
+
+def _compute_wage_growth(wage_df: pd.DataFrame) -> pd.DataFrame:
+    """Compute 1Y and 3Y wage growth per municipality."""
+    if wage_df.empty or "year" not in wage_df.columns:
+        return pd.DataFrame(columns=["municipality_clean", "wage_growth_1y", "wage_growth_3y",
+                                     "latest_wage"])
+
+    results = []
+    for muni, grp in wage_df.groupby("municipality_clean"):
+        grp = grp.sort_values("year")
+        if len(grp) < 2:
+            continue
+
+        latest = grp["monthly_wage"].iloc[-1]
+        if pd.isna(latest) or latest <= 0:
+            continue
+
+        # 1Y growth
+        prev = grp["monthly_wage"].iloc[-2]
+        growth_1y = (latest / prev - 1) * 100 if prev > 0 else np.nan
+
+        # 3Y annualized
+        if len(grp) >= 4:
+            base = grp["monthly_wage"].iloc[-4]
+            growth_3y = ((latest / base) ** (1/3) - 1) * 100 if base > 0 else np.nan
+        else:
+            growth_3y = np.nan
+
+        results.append({
+            "municipality_clean": muni,
+            "wage_growth_1y": round(growth_1y, 2) if not np.isnan(growth_1y) else np.nan,
+            "wage_growth_3y": round(growth_3y, 2) if not np.isnan(growth_3y) else np.nan,
+            "latest_wage": latest,
+        })
+
+    return pd.DataFrame(results)
+
+
+def _compute_construction_pressure(constr_df: pd.DataFrame,
+                                    pop_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute construction supply pressure per municipality.
+    Permits per 1000 inhabitants = supply pressure signal.
+    Also compute permit momentum (recent vs prior period).
+    """
+    if constr_df.empty:
+        return pd.DataFrame(columns=["municipality_clean", "permits_per_1000",
+                                     "permit_momentum"])
+
+    constr_df = constr_df.sort_values("quarter")
+    quarters = sorted(constr_df["quarter"].unique())
+
+    results = []
+    for muni, grp in constr_df.groupby("municipality_clean"):
+        grp = grp.sort_values("quarter")
+        total_permits = grp["permits"].sum()
+
+        # Recent 4Q vs prior 4Q momentum
+        if len(quarters) >= 8:
+            recent_qs = quarters[-4:]
+            prior_qs = quarters[-8:-4]
+            recent = grp[grp["quarter"].isin(recent_qs)]["permits"].sum()
+            prior = grp[grp["quarter"].isin(prior_qs)]["permits"].sum()
+            momentum = ((recent / prior - 1) * 100) if prior > 0 else np.nan
+        else:
+            recent = total_permits
+            momentum = np.nan
+
+        results.append({
+            "municipality_clean": muni,
+            "total_permits_2y": total_permits,
+            "recent_permits_1y": recent if len(quarters) >= 4 else total_permits,
+            "permit_momentum": round(momentum, 1) if momentum is not None and not np.isnan(momentum) else np.nan,
+        })
+
+    df = pd.DataFrame(results)
+
+    # Join population to compute permits per 1000 inhabitants
+    if not pop_df.empty:
+        pop_clean = pop_df.copy()
+        if "municipality_clean" not in pop_clean.columns and "municipality" in pop_clean.columns:
+            pop_clean["municipality_clean"] = (
+                pop_clean["municipality"]
+                .str.replace(r"\s*\(.*\)$", "", regex=True)
+                .str.replace(r"\s*-\s+\S+$", "", regex=True)
+                .str.strip()
+                .str.lower()
+            )
+        if "municipality_clean" in pop_clean.columns:
+            pop_lookup = pop_clean.drop_duplicates("municipality_clean")[["municipality_clean", "population"]]
+            df = df.merge(pop_lookup, on="municipality_clean", how="left")
+            df["permits_per_1000"] = (
+                df["recent_permits_1y"] / (df["population"] / 1000)
+            ).replace([np.inf, -np.inf], np.nan).round(2)
+        else:
+            df["permits_per_1000"] = np.nan
+    else:
+        df["permits_per_1000"] = np.nan
+
+    return df[["municipality_clean", "permits_per_1000", "permit_momentum"]]
 
 
 def _compute_index_signals(index_df: pd.DataFrame) -> pd.DataFrame:
@@ -552,11 +756,15 @@ def build_region_features() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     emp_df = fetch_employment()
     debt_df = fetch_debt_burden()
     mortgage_df = fetch_mortgage_rates()
+    wage_df = fetch_wages()
+    constr_df = fetch_construction()
 
     # Compute derived signals
     price_growth = _compute_price_growth(price_df)
     index_signals = _compute_index_signals(index_df)
     emp_hhi = _compute_employment_hhi(emp_df)
+    wage_growth = _compute_wage_growth(wage_df)
+    construction = _compute_construction_pressure(constr_df, pop_df)
 
     # Start with price growth (municipality level)
     features = price_growth.copy()
@@ -591,6 +799,19 @@ def build_region_features() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     else:
         features["mortgage_rate_current"] = np.nan
         features["mortgage_rate_trend"] = np.nan
+
+    # Ensure municipality_clean is present before merging wage/construction
+    if "municipality_clean" not in features.columns:
+        name_lookup = price_df.drop_duplicates("municipality_code")[["municipality_code", "municipality_clean"]]
+        features = features.merge(name_lookup, on="municipality_code", how="left")
+
+    # Merge wage growth (name-based — SSB codes may differ)
+    if not wage_growth.empty:
+        features = features.merge(wage_growth, on="municipality_clean", how="left")
+
+    # Merge construction pressure (name-based)
+    if not construction.empty:
+        features = features.merge(construction, on="municipality_clean", how="left")
 
     # Ensure municipality_clean is present for name-based joining
     if "municipality_clean" not in features.columns:

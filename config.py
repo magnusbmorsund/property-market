@@ -35,6 +35,8 @@ SSB_TABLES = {
     "employment": "13472",       # Employment by municipality + industry
     "debt_burden": "08781",      # Households with debt > 3x income
     "mortgage_rate": "10748",    # Mortgage interest rates (monthly)
+    "wages": "12852",            # Monthly earnings by municipality (annual)
+    "construction": "05889",     # Building permits by municipality (quarterly)
 }
 
 # ── Finn.no ───────────────────────────────────────────────────────────────────
