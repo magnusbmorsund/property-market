@@ -1,0 +1,425 @@
+#!/usr/bin/env python3
+"""
+run_pipeline.py — Norwegian Property Investment Pipeline
+
+Orchestrates:
+  1. FRED macro signals (NIBOR, M3, bond yield)
+  2. SSB region features (prices, rents, employment, debt)
+  3. Finn.no listing scraper
+  4. Property-level scoring
+  5. Top-N ranked output
+
+Usage:
+  python run_pipeline.py                          # default: top 50, balanced
+  python run_pipeline.py --top-n 100              # more results
+  python run_pipeline.py --yield-weight 0.6       # income-focused
+  python run_pipeline.py --max-listings 200       # limit Finn scraping
+  python run_pipeline.py --no-cache               # force refresh SSB/FRED
+  python run_pipeline.py --export results.csv     # custom export path
+"""
+
+import argparse
+import logging
+import shutil
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+# Ensure project root is on path
+sys.path.insert(0, str(Path(__file__).parent))
+
+from config import (
+    CACHE_DIR, OUTPUT_DIR,
+    DEFAULT_YIELD_WEIGHT, DEFAULT_GROWTH_WEIGHT,
+    DEFAULT_RISK_PENALTY, DEFAULT_TOP_N,
+    FINN_MAX_PAGES, FRED_API_KEY,
+)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)-8s  %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger(__name__)
+
+# ── Rich console output ──────────────────────────────────────────────────────
+try:
+    from rich.console import Console
+    from rich.table import Table
+    from rich.panel import Panel
+    RICH = True
+except ImportError:
+    RICH = False
+
+console = Console() if RICH else None
+
+
+def _print_header(text: str):
+    if RICH:
+        console.print(Panel(text, style="bold blue"))
+    else:
+        print(f"\n{'═' * 80}")
+        print(f"  {text}")
+        print(f"{'═' * 80}")
+
+
+def _print_results(df: pd.DataFrame, top_n: int):
+    """Print top-N scored properties to console."""
+    top = df.head(top_n)
+
+    if RICH:
+        table = Table(
+            title=f"TOP {top_n} PROPERTY DEALS IN NORWAY",
+            show_header=True,
+            header_style="bold cyan",
+            border_style="dim",
+            show_lines=False,
+            expand=True,
+        )
+
+        table.add_column("#", style="dim", no_wrap=True)
+        table.add_column("Score", no_wrap=True)
+        table.add_column("Yield", no_wrap=True)
+        table.add_column("Growth", no_wrap=True)
+        table.add_column("Risk", no_wrap=True)
+        table.add_column("Rec", no_wrap=True)
+        table.add_column("Municipality", no_wrap=True)
+        table.add_column("Type", no_wrap=True)
+        table.add_column("Price (NOK)", no_wrap=True, justify="right")
+        table.add_column("m²", no_wrap=True, justify="right")
+        table.add_column("Yield%", no_wrap=True, justify="right")
+        table.add_column("1Y Δ%", no_wrap=True, justify="right")
+
+        for _, row in top.iterrows():
+            rec = row.get("recommendation", "")
+            style = "bold green" if rec == "BUY" else (
+                "yellow" if rec == "HOLD" else "dim red")
+
+            price = row.get("asking_price") or row.get("total_price_calc")
+            price_str = f"{price:,.0f}" if price and not np.isnan(price) else "N/A"
+
+            sqm = row.get("sqm")
+            sqm_str = f"{sqm:.0f}" if sqm and not np.isnan(sqm) else "N/A"
+
+            gy = row.get("gross_yield_pct")
+            gy_str = f"{gy:.1f}" if gy and not np.isnan(gy) else "N/A"
+
+            g1y = row.get("price_growth_1y")
+            g1y_str = f"{g1y:+.1f}" if g1y is not None and not np.isnan(g1y) else "-"
+
+            table.add_row(
+                str(int(row.get("rank", 0))),
+                f"{row.get('composite_score', 0):.1f}",
+                f"{row.get('yield_score', 0):.1f}",
+                f"{row.get('growth_score', 0):.1f}",
+                str(row.get("risk_label", "N/A")),
+                rec,
+                str(row.get("municipality_name", row.get("address", "N/A")))[:18],
+                str(row.get("property_type", "N/A"))[:12],
+                price_str,
+                sqm_str,
+                gy_str,
+                g1y_str,
+                style=style,
+            )
+
+        console.print(table)
+    else:
+        print(f"\n{'═' * 120}")
+        print(f"  TOP {top_n} PROPERTY DEALS IN NORWAY")
+        print(f"{'═' * 120}")
+        print(f"  {'#':<4} {'Score':<7} {'Yield':<7} {'Growth':<7} {'Risk':<7} "
+              f"{'Municipality':<18} {'Price':>14} {'m²':>5} {'Yield%':>7} {'URL'}")
+        print(f"  {'─' * 116}")
+
+        for _, row in top.iterrows():
+            price = row.get("asking_price") or row.get("total_price_calc")
+            price_str = f"{price:>13,.0f}" if price and not np.isnan(price) else "          N/A"
+            sqm = row.get("sqm")
+            sqm_str = f"{sqm:>4.0f}" if sqm and not np.isnan(sqm) else " N/A"
+            gy = row.get("gross_yield_pct")
+            gy_str = f"{gy:>6.1f}" if gy and not np.isnan(gy) else "   N/A"
+
+            print(f"  {row.get('rank', 0):<4} "
+                  f"{row.get('composite_score', 0):<7.1f}"
+                  f"{row.get('yield_score', 0):<7.1f}"
+                  f"{row.get('growth_score', 0):<7.1f}"
+                  f"{str(row.get('risk_label', 'N/A')):<7} "
+                  f"{str(row.get('municipality_name', 'N/A')):<18} "
+                  f"{price_str} {sqm_str} {gy_str}  "
+                  f"{row.get('url', '')[:50]}")
+
+
+def _print_macro_summary(signals: dict):
+    """Print macro environment summary."""
+    if RICH:
+        lines = []
+        nibor = signals.get("nibor_current")
+        if nibor and not np.isnan(nibor):
+            trend = signals.get("nibor_trend_6m", 0)
+            arrow = "↑" if trend > 0 else "↓" if trend < 0 else "→"
+            lines.append(f"NIBOR 3M: {nibor:.2f}% {arrow} ({trend:+.2f}pp 6M)")
+
+        m3 = signals.get("m3_yoy_growth")
+        if m3 and not np.isnan(m3):
+            accel = signals.get("m3_acceleration", 0)
+            arrow = "↑" if accel > 0 else "↓" if accel < 0 else "→"
+            lines.append(f"M3 Money Supply YoY: {m3:.1f}% {arrow}")
+
+        bond = signals.get("bond_yield_10y")
+        if bond and not np.isnan(bond):
+            lines.append(f"10Y Bond Yield: {bond:.2f}%")
+
+        spread = signals.get("yield_curve_spread")
+        if spread and not np.isnan(spread):
+            lines.append(f"Yield Curve Spread: {spread:+.2f}pp")
+
+        console.print(Panel("\n".join(lines) if lines else "No FRED data available",
+                            title="📈 Macro Environment", style="green"))
+    else:
+        print("\n  Macro Environment:")
+        for k, v in signals.items():
+            if v and not np.isnan(v):
+                print(f"    {k}: {v}")
+
+
+# ── Pipeline steps ───────────────────────────────────────────────────────────
+
+def step_fetch_macro(no_cache: bool) -> dict:
+    """Step 1: Fetch FRED macro signals."""
+    _print_header("Step 1/5: Fetching FRED macro signals...")
+
+    if no_cache:
+        for f in CACHE_DIR.glob("fred_*.json"):
+            f.unlink()
+
+    from data_sources.fred import get_macro_signals
+    signals = get_macro_signals()
+    _print_macro_summary(signals)
+    return signals
+
+
+def step_fetch_regions(no_cache: bool) -> tuple:
+    """Step 2: Fetch SSB region features."""
+    _print_header("Step 2/5: Fetching SSB region data...")
+
+    if no_cache:
+        for f in CACHE_DIR.glob("ssb_*.json"):
+            f.unlink()
+
+    from data_sources.ssb import build_region_features
+    features, rent_data, index_signals = build_region_features()
+    logger.info(f"[pipeline] Region features: {len(features)} municipalities")
+    return features, rent_data, index_signals
+
+
+def step_scrape_finn(max_pages: int, max_listings: int = None) -> pd.DataFrame:
+    """Step 3: Scrape Finn.no listings."""
+    _print_header("Step 3/5: Scraping Finn.no listings...")
+
+    from scrapers.finn import scrape_listings
+    listings = scrape_listings(max_pages=max_pages, max_listings=max_listings)
+    logger.info(f"[pipeline] Scraped {len(listings)} listings from Finn.no")
+    return listings
+
+
+def step_enrich(listings: pd.DataFrame,
+                region_features: pd.DataFrame,
+                rent_data: pd.DataFrame,
+                index_signals: pd.DataFrame) -> pd.DataFrame:
+    """Step 4: Map listings to municipalities and join region data."""
+    _print_header("Step 4/5: Enriching listings with region data...")
+
+    from mapping.region_mapper import enrich_listings_with_regions, estimate_rent_for_municipality
+
+    # Add municipality/region codes
+    enriched = enrich_listings_with_regions(listings)
+
+    # Join region features — use name-based matching since SSB codes
+    # may differ from our mapper codes (pre/post 2020 municipality reform)
+    if not region_features.empty and "municipality_name" in enriched.columns:
+        enriched["municipality_clean"] = (
+            enriched["municipality_name"]
+            .str.strip()
+            .str.lower()
+        )
+
+        if "municipality_clean" in region_features.columns:
+            # Join on cleaned municipality name (most reliable across code systems)
+            feat_deduped = region_features.drop_duplicates(subset=["municipality_clean"])
+            join_cols = [c for c in feat_deduped.columns if c != "municipality_code"]
+            enriched = enriched.merge(
+                feat_deduped[join_cols],
+                on="municipality_clean", how="left"
+            )
+
+    if not rent_data.empty:
+        enriched["estimated_monthly_rent"] = enriched.apply(
+            lambda row: estimate_rent_for_municipality(
+                row["municipality_code"], rent_data, row.get("sqm", 70)
+            ),
+            axis=1,
+        )
+        enriched["estimated_annual_rent"] = enriched["estimated_monthly_rent"] * 12
+    else:
+        enriched["estimated_monthly_rent"] = np.nan
+        enriched["estimated_annual_rent"] = np.nan
+
+    # Join index signals (SSB uses broad price-index regions, not municipalities)
+    # Map municipality names to SSB index region codes
+    if not index_signals.empty:
+        _INDEX_REGION_MAP = {
+            "oslo": "001", "bærum": "001",
+            "stavanger": "002", "sandnes": "002", "sola": "002", "randaberg": "002",
+            "bergen": "003",
+            "trondheim": "004",
+        }
+        # Map fylke codes to index regions for remaining
+        _FYLKE_TO_INDEX = {
+            "32": "005",  # Akershus (uten Bærum)
+            "31": "006", "33": "006", "38": "006", "39": "006",  # Østfold/Buskerud/Vestfold/Telemark
+            "34": "007",  # Innlandet
+            "40": "008", "11": "008",  # Agder + Rogaland (uten Stavanger)
+            "15": "009", "42": "009",  # Møre og Romsdal + Vestland (uten Bergen)
+            "50": "010",  # Trøndelag (uten Trondheim)
+            "18": "011", "55": "011", "56": "011",  # Nord-Norge
+        }
+
+        def _map_to_index_region(row):
+            name = str(row.get("municipality_clean", "")).lower()
+            if name in _INDEX_REGION_MAP:
+                return _INDEX_REGION_MAP[name]
+            fylke = str(row.get("region_code", ""))
+            return _FYLKE_TO_INDEX.get(fylke, "TOTAL")
+
+        enriched["index_region_code"] = enriched.apply(_map_to_index_region, axis=1)
+        idx_cols = ["region_code", "index_momentum_qoq", "volatility_qoq", "latest_index"]
+        idx_cols = [c for c in idx_cols if c in index_signals.columns]
+        idx_rename = {"region_code": "index_region_code"}
+        idx_data = index_signals[idx_cols].rename(columns=idx_rename)
+        enriched = enriched.merge(idx_data, on="index_region_code", how="left")
+
+    # Compute gross yield
+    if "total_price_calc" in enriched.columns and "estimated_annual_rent" in enriched.columns:
+        enriched["gross_yield_pct"] = (
+            enriched["estimated_annual_rent"] / enriched["total_price_calc"] * 100
+        ).replace([np.inf, -np.inf], np.nan).round(2)
+
+    logger.info(f"[pipeline] Enriched {len(enriched)} listings with region data")
+    return enriched
+
+
+def step_score(enriched: pd.DataFrame,
+               macro_signals: dict,
+               yield_weight: float,
+               growth_weight: float,
+               risk_penalty: float) -> pd.DataFrame:
+    """Step 5: Score and rank properties."""
+    _print_header("Step 5/5: Scoring properties...")
+
+    from models.property_scorer import score_properties
+    scored = score_properties(
+        enriched,
+        macro_signals=macro_signals,
+        yield_weight=yield_weight,
+        growth_weight=growth_weight,
+        risk_penalty=risk_penalty,
+    )
+    return scored
+
+
+# ── Main ─────────────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Norwegian Property Investment Pipeline — "
+                    "Scrape, enrich, score, and rank property deals"
+    )
+    parser.add_argument("--top-n", type=int, default=DEFAULT_TOP_N,
+                        help=f"Number of top properties to display (default: {DEFAULT_TOP_N})")
+    parser.add_argument("--yield-weight", type=float, default=DEFAULT_YIELD_WEIGHT,
+                        help=f"Weight on rental yield (default: {DEFAULT_YIELD_WEIGHT})")
+    parser.add_argument("--growth-weight", type=float, default=DEFAULT_GROWTH_WEIGHT,
+                        help=f"Weight on price growth (default: {DEFAULT_GROWTH_WEIGHT})")
+    parser.add_argument("--risk-penalty", type=float, default=DEFAULT_RISK_PENALTY,
+                        help=f"Risk penalty factor (default: {DEFAULT_RISK_PENALTY})")
+    parser.add_argument("--max-pages", type=int, default=FINN_MAX_PAGES,
+                        help=f"Max Finn.no search pages to scrape (default: {FINN_MAX_PAGES})")
+    parser.add_argument("--max-listings", type=int, default=None,
+                        help="Cap on number of listings to fetch details for")
+    parser.add_argument("--no-cache", action="store_true",
+                        help="Force refresh SSB/FRED cached data")
+    parser.add_argument("--export", type=str, default=None,
+                        help="Export path for CSV (default: output/property_scores.csv)")
+    args = parser.parse_args()
+
+    start_time = time.time()
+
+    if not FRED_API_KEY:
+        logger.warning("⚠ FRED_API_KEY not set — macro signals will be unavailable. "
+                       "Set via: export FRED_API_KEY=your_key")
+
+    _print_header("🏠 Norwegian Property Investment Pipeline")
+
+    # Step 1: FRED macro signals
+    macro_signals = step_fetch_macro(args.no_cache)
+
+    # Step 2: SSB region features
+    region_features, rent_data, index_signals = step_fetch_regions(args.no_cache)
+
+    # Step 3: Scrape Finn.no
+    listings = step_scrape_finn(args.max_pages, args.max_listings)
+
+    if listings.empty:
+        logger.error("No listings scraped — cannot proceed. "
+                     "Check network connection and Finn.no availability.")
+        sys.exit(1)
+
+    # Step 4: Enrich listings
+    enriched = step_enrich(listings, region_features, rent_data, index_signals)
+
+    # Step 5: Score
+    scored = step_score(
+        enriched,
+        macro_signals=macro_signals,
+        yield_weight=args.yield_weight,
+        growth_weight=args.growth_weight,
+        risk_penalty=args.risk_penalty,
+    )
+
+    # ── Output ───────────────────────────────────────────────────────────
+    _print_results(scored, args.top_n)
+
+    # Export to CSV
+    export_path = Path(args.export) if args.export else OUTPUT_DIR / "property_scores.csv"
+    export_cols = [
+        "rank", "recommendation", "composite_score", "yield_score", "growth_score",
+        "risk_score", "risk_label",
+        "finnkode", "url", "title", "address",
+        "municipality_name", "region_name",
+        "asking_price", "total_price_calc", "sqm", "price_per_sqm",
+        "property_type", "ownership_type", "bedrooms", "year_built",
+        "common_costs_monthly", "fellesgjeld",
+        "gross_yield_pct", "estimated_monthly_rent",
+        "price_growth_1y", "price_growth_3y",
+        "debt_burden_pct", "employment_hhi",
+        "population",
+    ]
+    export_cols = [c for c in export_cols if c in scored.columns]
+    scored[export_cols].to_csv(export_path, index=False)
+    logger.info(f"[pipeline] Results exported to {export_path}")
+
+    elapsed = time.time() - start_time
+    logger.info(f"[pipeline] Pipeline complete in {elapsed:.1f}s — "
+                f"{len(scored)} properties scored, top {args.top_n} displayed")
+
+    if RICH:
+        console.print(f"\n[dim]Results saved to: {export_path}[/dim]")
+        console.print(f"[dim]Total runtime: {elapsed:.1f}s[/dim]\n")
+
+
+if __name__ == "__main__":
+    main()
