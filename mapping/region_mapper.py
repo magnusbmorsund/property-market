@@ -188,6 +188,11 @@ _PLACE_ALIASES = {
     "øvre ervik": "4201",  # Bergen (Laksevåg bydel)
     "morvik": "4201",      # Bergen (Åsane bydel)
     "hjellestad": "4201",  # Bergen (Ytrebygda bydel)
+    "bønes": "4201",       # Bergen (Fyllingsdalen bydel)
+    "kokstad": "4201",     # Bergen (Fana bydel)
+    "haukeland": "4201",   # Bergen (Åsane bydel, Haukeland hospital area)
+    "brattholmen": "4631", # Øygarden
+    "knarrevik": "4631",   # Øygarden
     "søfteland": "4214",   # Bjørnafjorden (formerly Os)
     # Commonly mismatched places
     "kråkerøy": "3107",    # Fredrikstad
