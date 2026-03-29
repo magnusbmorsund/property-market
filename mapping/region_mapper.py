@@ -90,8 +90,8 @@ _PLACE_ALIASES = {
     "ågotnes": "4631",     # Øygarden
     "straume": "4631",     # Øygarden
     "sotra": "4631",       # Øygarden
-    "askøy": "4218",       # Askøy
-    "kleppestø": "4218",   # Askøy
+    "askøy": "4217",       # Askøy
+    "kleppestø": "4217",   # Askøy
     "arna": "4201",        # Bergen
     "fana": "4201",        # Bergen
     "åsane": "4201",       # Bergen
@@ -100,16 +100,16 @@ _PLACE_ALIASES = {
     "nesttun": "4201",     # Bergen
     "råholt": "3209",      # Ullensaker
     "kløfta": "3209",      # Ullensaker
-    "ås": "3218",          # Ås
-    "drøbak": "3216",      # Frogn
+    "ås": "3215",          # Ås
+    "drøbak": "3213",      # Frogn
     "langhus": "3207",     # Nordre Follo
     "kolbotn": "3207",     # Nordre Follo
-    "lørenskog": "3211",   # Lørenskog
-    "fjellhamar": "3211",  # Lørenskog
-    "rælingen": "3213",    # Rælingen
+    "lørenskog": "3218",   # Lørenskog
+    "fjellhamar": "3218",  # Lørenskog
+    "rælingen": "3220",    # Rælingen
     "nittedal": "3232",    # Nittedal
-    "nesoddtangen": "3214", # Nesodden
-    "vinterbro": "3218",   # Ås
+    "nesoddtangen": "3212", # Nesodden
+    "vinterbro": "3215",   # Ås
     "heimdal": "5001",     # Trondheim
     "byåsen": "5001",      # Trondheim
     "tiller": "5001",      # Trondheim
@@ -173,11 +173,22 @@ _PLACE_ALIASES = {
     "jevnaker": "3340",    # Jevnaker
     "lunner": "3342",      # Lunner
     "flå": "3320",         # Flå
-    "gol": "3340",         # Gol
+    "gol": "3324",         # Gol
     "hemsedal": "3338",    # Hemsedal
     "ål": "3336",          # Ål
     "geilo": "3336",       # Ål
     "nesbyen": "3322",     # Nesbyen
+    # Bergen neighbourhoods (prevent fuzzy-match misfires to other municipalities)
+    "sandsli": "4201",     # Bergen (Fana bydel)
+    "loddefjord": "4201",  # Bergen (Laksevåg bydel)
+    "rådal": "4201",       # Bergen (Fana bydel)
+    "tertnes": "4201",     # Bergen (Åsane bydel)
+    "olsvik": "4201",      # Bergen (Laksevåg bydel)
+    "erdal": "4201",       # Bergen (Laksevåg bydel)
+    "øvre ervik": "4201",  # Bergen (Laksevåg bydel)
+    "morvik": "4201",      # Bergen (Åsane bydel)
+    "hjellestad": "4201",  # Bergen (Ytrebygda bydel)
+    "søfteland": "4214",   # Bjørnafjorden (formerly Os)
     # Commonly mismatched places
     "kråkerøy": "3107",    # Fredrikstad
     "brekstad": "5056",    # Ørland
@@ -197,7 +208,7 @@ _PLACE_ALIASES = {
     "holmen": "3203",      # Asker
     "nesbru": "3203",      # Asker
     "slemmestad": "3203",  # Asker
-    "spikkestad": "3316",  # Modum? Actually Røyken→Asker
+    "spikkestad": "3203",  # Asker (formerly Røyken)
     "lier": "3312",        # Lier
     "tranby": "3312",      # Lier
     "sylling": "3312",     # Lier
