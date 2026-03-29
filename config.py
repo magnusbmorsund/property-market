@@ -47,6 +47,44 @@ FINN_CONCURRENCY = 15    # concurrent httpx requests for listing details
 FINN_DELAY_BETWEEN_PAGES = 1.5  # seconds between search page loads (Playwright)
 FINN_DELAY_BETWEEN_BATCHES = 0.5  # seconds between httpx batches
 
+# ── Sweden - FRED API (Swedish macro series) ──────────────────────────────────
+FRED_SERIES_SE = {
+    "stibor_3m": "IR3TIB01SEM156N",     # 3-month STIBOR (Swedish interbank rate)
+    "m3_money":  "MABMM301SEM189S",     # M3 broad money supply Sweden
+    "bond_10y":  "IRLTLT01SEM156N",     # 10-year Swedish government bond yield
+}
+
+# ── SCB (Statistics Sweden) API ───────────────────────────────────────────────
+SCB_BASE_URL = "https://api.scb.se/OV0104/v1/doris/sv/ssd"
+
+SCB_TABLES = {
+    "housing_prices": "BO/BO0501/BO0501A/FastprisKNRegK",
+    "rent":           "BO/BO0202/BO0202B/HyraNytUthB",
+    "population":     "BE/BE0101/BE0101A/BefolkningNy",
+    "employment":     "AM/AM0207/AM0207K/RAKS07KN",
+    "wages":          "AM/AM0102/AM0102H/LonKNSektJ",
+    "construction":   "BO/BO0701/BO0701A/BygglovBGT",
+}
+
+# ── Hemnet.se ─────────────────────────────────────────────────────────────────
+HEMNET_SEARCH_URL = "https://www.hemnet.se/bostader"
+HEMNET_MAX_PAGES = 20
+HEMNET_CONCURRENCY = 15
+HEMNET_DELAY_BETWEEN_PAGES = 2.0
+HEMNET_DELAY_BETWEEN_BATCHES = 0.5
+
+# Hemnet location IDs for Swedish cities (passed as location_ids[] param).
+# NOTE: These are Hemnet's internal location IDs — verify via Hemnet search UI
+# if scraping returns no results (inspect network request to /bostader).
+HEMNET_CITY_LOCATION_IDS = {
+    "stockholm":  "898051",   # Stockholm municipality
+    "gothenburg": "898165",   # Göteborg municipality
+    "malmo":      "898273",   # Malmö municipality
+    "uppsala":    "898319",   # Uppsala municipality
+    "linkoping":  "898354",   # Linköping municipality
+    "orebro":     "898380",   # Örebro municipality
+}
+
 # ── Scoring defaults ─────────────────────────────────────────────────────────
 DEFAULT_YIELD_WEIGHT = 0.40
 DEFAULT_GROWTH_WEIGHT = 0.30

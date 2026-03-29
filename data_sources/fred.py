@@ -18,7 +18,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from config import FRED_API_KEY, FRED_SERIES, CACHE_DIR, CACHE_TTL_HOURS
+from config import FRED_API_KEY, FRED_SERIES, FRED_SERIES_SE, CACHE_DIR, CACHE_TTL_HOURS
 
 logger = logging.getLogger(__name__)
 
@@ -138,23 +138,52 @@ def _compute_bond_signals(series: pd.Series, nibor_current: float) -> dict:
     }
 
 
-def get_macro_signals() -> dict:
+def get_macro_signals(country: str = "norway") -> dict:
     """
     Fetch all FRED data and return a flat dict of computed macro signals.
+
+    Parameters
+    ----------
+    country : str
+        "norway" (default) uses NIBOR/Norwegian FRED series.
+        "sweden" uses STIBOR/Swedish FRED series.
 
     Returns dict with keys:
         nibor_current, nibor_trend_6m, nibor_percentile_10y,
         m3_yoy_growth, m3_acceleration,
         bond_yield_10y, yield_curve_spread
+
+    The same dict keys are used for both countries for scorer compatibility.
+    nibor_current holds the interbank rate regardless of country
+    (NIBOR for Norway, STIBOR for Sweden).
     """
-    nibor = _fetch_series(FRED_SERIES["nibor_3m"], "nibor_3m")
-    m3 = _fetch_series(FRED_SERIES["m3_money"], "m3_money")
-    bond = _fetch_series(FRED_SERIES["bond_10y"], "bond_10y")
+    if country == "sweden":
+        series_map = FRED_SERIES_SE
+        # Cache keys prefixed with "se_" to avoid collision with Norwegian cache
+        rate_key = "se_stibor_3m"
+        m3_key = "se_m3_money"
+        bond_key = "se_bond_10y"
+        log_prefix = "STIBOR"
+    else:
+        series_map = FRED_SERIES
+        rate_key = "nibor_3m"
+        m3_key = "m3_money"
+        bond_key = "bond_10y"
+        log_prefix = "NIBOR"
 
-    nibor_signals = _compute_nibor_signals(nibor)
+    interbank_series_id = (
+        series_map["stibor_3m"] if country == "sweden" else series_map["nibor_3m"]
+    )
+
+    rate = _fetch_series(interbank_series_id, rate_key)
+    m3 = _fetch_series(series_map["m3_money"], m3_key)
+    bond = _fetch_series(series_map["bond_10y"], bond_key)
+
+    # _compute_nibor_signals is country-agnostic — same calculation for STIBOR
+    rate_signals = _compute_nibor_signals(rate)
     m3_signals = _compute_m3_signals(m3)
-    bond_signals = _compute_bond_signals(bond, nibor_signals["nibor_current"])
+    bond_signals = _compute_bond_signals(bond, rate_signals["nibor_current"])
 
-    signals = {**nibor_signals, **m3_signals, **bond_signals}
-    logger.info(f"[fred] Macro signals: {signals}")
+    signals = {**rate_signals, **m3_signals, **bond_signals}
+    logger.info(f"[fred] {log_prefix} macro signals ({country}): {signals}")
     return signals
