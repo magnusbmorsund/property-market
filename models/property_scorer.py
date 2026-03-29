@@ -224,6 +224,8 @@ def score_properties(
 
     # Normalise yield and growth weights to sum to 1.0
     total_w = yield_weight + growth_weight
+    if total_w <= 0:
+        total_w = 1.0
     yw = yield_weight / total_w
     gw = growth_weight / total_w
 

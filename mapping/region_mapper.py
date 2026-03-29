@@ -244,7 +244,10 @@ _CODE_TO_REGION_NAME = {m["code"]: m["region_name"] for m in _MUNICIPALITIES["mu
 _CODE_TO_ZONE = {m["code"]: m.get("rent_zone", "99") for m in _MUNICIPALITIES["municipalities"]}
 
 # All municipality and place names for fuzzy matching
-_ALL_NAMES = list(set(list(_NAME_TO_CODE.keys()) + list(_PLACE_ALIASES.keys())))
+_ALL_NAMES = sorted(
+    set(list(_NAME_TO_CODE.keys()) + list(_PLACE_ALIASES.keys())),
+    key=len, reverse=True,
+)
 
 
 def map_address_to_municipality(address: str) -> tuple[str, str]:
@@ -279,8 +282,8 @@ def map_address_to_municipality(address: str) -> tuple[str, str]:
 
     # Strategy 2: Check if any known municipality name appears as a whole word
     addr_lower = address.lower()
-    # Sort by name length descending to match longest first (e.g., "Oslo" before "Os")
-    for name in sorted(_ALL_NAMES, key=len, reverse=True):
+    # _ALL_NAMES is pre-sorted by length descending at module load
+    for name in _ALL_NAMES:
         if len(name) >= 3 and re.search(r'(?<!\w)' + re.escape(name) + r'(?!\w)', addr_lower):
             code = _ALIASES[name]
             return (code, _CODE_TO_NAME.get(code, code))

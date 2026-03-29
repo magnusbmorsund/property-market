@@ -201,26 +201,29 @@ def _parse_listing_html(html: str, url: str, finnkode: str) -> dict:
     if title_tag:
         data["title"] = title_tag.get_text(strip=True)
 
-    # ── Extract address — JSON-LD first (structured, stable), HTML fallback ──
-    # Pattern 0: JSON-LD structured data (most reliable, independent of CSS)
-    import json as _json
+    # ── Parse all JSON-LD blocks once; use for address + price ──────────────
+    _ld_blocks = []
     for script in soup.find_all("script", type="application/ld+json"):
         try:
             ld = _json.loads(script.string or "")
             if isinstance(ld, list):
                 ld = next((x for x in ld if isinstance(x, dict)), {})
-            addr = ld.get("address") or {}
-            if isinstance(addr, dict):
-                parts = [addr.get("streetAddress"), addr.get("postalCode"), addr.get("addressLocality")]
-                combined = " ".join(p for p in parts if p)
-                if combined:
-                    data["address"] = combined
-                    break
-            elif isinstance(addr, str) and addr:
-                data["address"] = addr
-                break
+            if isinstance(ld, dict):
+                _ld_blocks.append(ld)
         except Exception:
             pass
+
+    for ld in _ld_blocks:
+        addr = ld.get("address") or {}
+        if isinstance(addr, dict):
+            parts = [addr.get("streetAddress"), addr.get("postalCode"), addr.get("addressLocality")]
+            combined = " ".join(p for p in parts if p)
+            if combined:
+                data["address"] = combined
+                break
+        elif isinstance(addr, str) and addr:
+            data["address"] = addr
+            break
 
     # Pattern 1: HTML data-testid / CSS selectors (falls back if JSON-LD missing)
     if "address" not in data:
@@ -277,29 +280,26 @@ def _parse_listing_html(html: str, url: str, finnkode: str) -> dict:
                 else:
                     data[field] = value_text
 
-    # ── Try JSON-LD structured data ──────────────────────────────────────
-    import json
-    for script in soup.find_all("script", type="application/ld+json"):
-        try:
-            ld = json.loads(script.string)
-            if isinstance(ld, dict):
-                if ld.get("@type") in ("Product", "RealEstateListing", "Residence"):
-                    if "name" not in data and "name" in ld:
-                        data["title"] = ld["name"]
-                    if "address" not in data:
-                        addr = ld.get("address", {})
-                        if isinstance(addr, dict):
-                            parts = [addr.get("streetAddress", ""),
-                                     addr.get("postalCode", ""),
-                                     addr.get("addressLocality", "")]
-                            data["address"] = ", ".join(p for p in parts if p)
-                    offers = ld.get("offers", {})
-                    if isinstance(offers, dict) and "asking_price" not in data:
-                        price = offers.get("price")
-                        if price:
-                            data["asking_price"] = float(price)
-        except (json.JSONDecodeError, TypeError, ValueError):
-            continue
+    # ── Use pre-parsed JSON-LD blocks for price + title fallback ────────────
+    for ld in _ld_blocks:
+        if ld.get("@type") in ("Product", "RealEstateListing", "Residence"):
+            if "title" not in data and "name" in ld:
+                data["title"] = ld["name"]
+            if "address" not in data:
+                addr = ld.get("address", {})
+                if isinstance(addr, dict):
+                    parts = [addr.get("streetAddress", ""),
+                             addr.get("postalCode", ""),
+                             addr.get("addressLocality", "")]
+                    data["address"] = ", ".join(p for p in parts if p)
+            offers = ld.get("offers", {})
+            if isinstance(offers, dict) and "asking_price" not in data:
+                price = offers.get("price")
+                if price:
+                    try:
+                        data["asking_price"] = float(price)
+                    except (TypeError, ValueError):
+                        pass
 
     # ── Compute derived fields ───────────────────────────────────────────
     # Best available sqm

@@ -166,50 +166,39 @@ def _query_scb(table_path: str, query: dict, cache_key: str,
 
 def fetch_housing_prices() -> pd.DataFrame:
     """
-    Fetch average housing prices per sqm by municipality from SCB.
+    Fetch housing purchase prices by municipality from SCB.
 
-    Primary table:  BO/BO0501/BO0501A/FastprisKNRegK
-    Fallback table: BO/BO0501/BO0501C/PrisKvN
+    Table: BO/BO0501/BO0501B/FastprisSHRegionAr
+    Variable BO0501C2 = mean purchase price (tkr) for permanent residences (småhus).
+    Note: this is total transaction price, not price/sqm — avg_price_sqm is left NaN.
+    price_growth_1y and price_growth_3y are derived from the annual price time-series.
 
     Returns
     -------
-    DataFrame with columns:
-        municipality_code, municipality_name, year,
-        avg_price_sqm, price_growth_1y, price_growth_3y, municipality_clean
+    DataFrame with columns: municipality_code, municipality_name, municipality_clean,
+                             year, avg_price_sqm (NaN), price_growth_1y, price_growth_3y
     """
-    primary_path = SCB_TABLES.get("housing_prices", "BO/BO0501/BO0501A/FastprisKNRegK")
-    fallback_path = "BO/BO0501/BO0501C/PrisKvN"
-
+    table_path = SCB_TABLES.get("housing_prices", "BO/BO0501/BO0501B/FastprisSHRegionAr")
     query = {
         "query": [
-            {"code": "Region",       "selection": {"filter": "all",  "values": ["*"]}},
-            {"code": "ContentsCode", "selection": {"filter": "item", "values": ["FastprisKvmHela"]}},
-            {"code": "Tid",          "selection": {"filter": "top",  "values": ["5"]}},
+            {"code": "Region",        "selection": {"filter": "all", "values": ["*"]}},
+            {"code": "Fastighetstyp", "selection": {"filter": "item", "values": ["220"]}},
+            {"code": "ContentsCode",  "selection": {"filter": "item", "values": ["BO0501C2"]}},
+            {"code": "Tid",           "selection": {"filter": "top",  "values": ["5"]}},
         ],
         "response": {"format": "json-stat2"},
     }
 
-    df = _query_scb(primary_path, query, "housing_prices")
-
-    # Try fallback if primary fails or is empty
-    if df.empty:
-        logger.warning("[scb] housing_prices primary table empty — trying fallback path")
-        query_fb = {
-            "query": [
-                {"code": "Region",       "selection": {"filter": "all",  "values": ["*"]}},
-                {"code": "ContentsCode", "selection": {"filter": "all",  "values": ["*"]}},
-                {"code": "Tid",          "selection": {"filter": "top",  "values": ["5"]}},
-            ],
-            "response": {"format": "json-stat2"},
-        }
-        df = _query_scb(fallback_path, query_fb, "housing_prices_fallback")
-
-    if df.empty:
-        logger.warning("[scb] fetch_housing_prices: no data available")
+    try:
+        df = _query_scb(table_path, query, "housing_prices")
+    except Exception as e:
+        logger.warning(f"[scb] fetch_housing_prices failed: {e}")
         return pd.DataFrame()
 
+    if df.empty:
+        return df
+
     try:
-        # Normalise column names — SCB JSON-stat uses dimension names as column headers
         rename = {}
         for col in df.columns:
             col_lower = col.lower()
@@ -219,67 +208,40 @@ def fetch_housing_prices() -> pd.DataFrame:
                 rename[col] = "municipality_name"
             elif "tid" in col_lower and "_code" in col_lower:
                 rename[col] = "year"
-            elif "tid" in col_lower and "_code" not in col_lower:
-                rename[col] = "year_label"
             elif col == "value":
-                rename[col] = "avg_price_sqm"
+                rename[col] = "avg_price_tkr"
         df = df.rename(columns=rename)
 
-        # Ensure required columns
-        for col in ("municipality_code", "municipality_name", "year", "avg_price_sqm"):
-            if col not in df.columns:
-                # Create from available data as best effort
-                if col == "year" and "year_label" in df.columns:
-                    df["year"] = df["year_label"].astype(str)
-                elif col == "municipality_name" and "municipality_code" in df.columns:
-                    df["municipality_name"] = df["municipality_code"]
-                else:
-                    df[col] = np.nan
+        if "municipality_name" not in df.columns:
+            df["municipality_name"] = df.get("municipality_code", "")
+        if "year" not in df.columns and "Tid" in df.columns:
+            df["year"] = df["Tid"].astype(str)
 
-        df["avg_price_sqm"] = pd.to_numeric(df["avg_price_sqm"], errors="coerce")
-        df = df.dropna(subset=["avg_price_sqm"])
+        df["avg_price_tkr"] = pd.to_numeric(df.get("avg_price_tkr", pd.Series(dtype=float)), errors="coerce")
+        df = df.dropna(subset=["avg_price_tkr", "municipality_code"])
         df["year"] = df["year"].astype(str)
 
-        # Average across housing types if multiple rows per municipality/year
-        group_cols = [c for c in ["municipality_code", "municipality_name", "year"]
-                      if c in df.columns]
-        df = df.groupby(group_cols, as_index=False)["avg_price_sqm"].mean()
+        group_cols = [c for c in ["municipality_code", "municipality_name", "year"] if c in df.columns]
+        df = df.groupby(group_cols, as_index=False)["avg_price_tkr"].mean()
+        df["municipality_clean"] = df["municipality_name"].str.strip().str.lower()
 
-        # Clean municipality name for downstream joining
-        df["municipality_clean"] = (
-            df["municipality_name"]
-            .str.strip()
-            .str.lower()
-        )
-
-        # Compute YoY and 3Y growth per municipality
         df_sorted = df.sort_values(["municipality_code", "year"])
         growth_rows = []
         for muni_code, grp in df_sorted.groupby("municipality_code"):
             grp = grp.sort_values("year").reset_index(drop=True)
             latest_row = grp.iloc[-1].to_dict()
-            latest_price = latest_row["avg_price_sqm"]
+            latest_price = latest_row["avg_price_tkr"]
 
-            # 1-year growth
-            if len(grp) >= 2:
-                prev_price = grp.iloc[-2]["avg_price_sqm"]
-                latest_row["price_growth_1y"] = (
-                    (latest_price / prev_price - 1) * 100
-                    if prev_price and prev_price > 0 else np.nan
-                )
-            else:
-                latest_row["price_growth_1y"] = np.nan
-
-            # 3-year annualized growth
-            if len(grp) >= 4:
-                price_3y_ago = grp.iloc[-4]["avg_price_sqm"]
-                latest_row["price_growth_3y"] = (
-                    ((latest_price / price_3y_ago) ** (1 / 3) - 1) * 100
-                    if price_3y_ago and price_3y_ago > 0 else np.nan
-                )
-            else:
-                latest_row["price_growth_3y"] = np.nan
-
+            latest_row["price_growth_1y"] = (
+                (latest_price / grp.iloc[-2]["avg_price_tkr"] - 1) * 100
+                if len(grp) >= 2 and grp.iloc[-2]["avg_price_tkr"] > 0 else np.nan
+            )
+            latest_row["price_growth_3y"] = (
+                ((latest_price / grp.iloc[-4]["avg_price_tkr"]) ** (1 / 3) - 1) * 100
+                if len(grp) >= 4 and grp.iloc[-4]["avg_price_tkr"] > 0 else np.nan
+            )
+            # avg_price_sqm not available from this table (total price, not per-sqm)
+            latest_row["avg_price_sqm"] = np.nan
             growth_rows.append(latest_row)
 
         result = pd.DataFrame(growth_rows)
@@ -296,99 +258,111 @@ def fetch_housing_prices() -> pd.DataFrame:
 
 def fetch_rent_data() -> pd.DataFrame:
     """
-    Fetch rental data from SCB and map to our rent_zone system.
+    Fetch median monthly rent per sqm by municipality from SCB.
 
-    Primary table: BO/BO0202/BO0202B/HyraNytUthB
+    Table: BO/BO0406/BO0406E/BO0406Tab01
+    Variable Hyresuppg=Mh_kvm: median monthly rent per sqm (SEK).
+    Returns plain PxWeb JSON (not JSON-stat2) — parsed directly.
 
-    On failure or empty result, generates synthetic rent estimates by zone
-    using a power-law size-scaling formula.
+    Builds zone/sqm/monthly_rent table by mapping municipality codes to
+    rent zones and expanding across standard sqm brackets.
+
+    Falls back to synthetic estimates if the API call fails.
 
     Returns
     -------
     DataFrame with columns: rent_zone, sqm, monthly_rent
     """
-    table_path = SCB_TABLES.get("rent", "BO/BO0202/BO0202B/HyraNytUthB")
+    table_path = SCB_TABLES.get("rent", "BO/BO0406/BO0406E/BO0406Tab01")
+    url = f"{SCB_BASE_URL}/{table_path}"
     query = {
         "query": [
-            {"code": "Region",       "selection": {"filter": "all", "values": ["*"]}},
-            {"code": "ContentsCode", "selection": {"filter": "all", "values": ["*"]}},
-            {"code": "Tid",          "selection": {"filter": "top", "values": ["1"]}},
+            {"code": "Region",       "selection": {"filter": "all",  "values": ["*"]}},
+            {"code": "Hyresuppg",    "selection": {"filter": "item", "values": ["Mh_kvm"]}},
+            {"code": "ContentsCode", "selection": {"filter": "item", "values": ["000000J4"]}},
+            {"code": "Tid",          "selection": {"filter": "top",  "values": ["1"]}},
         ],
-        "response": {"format": "json-stat2"},
+        "response": {"format": "json"},
     }
 
-    df = pd.DataFrame()
-    try:
-        df = _query_scb(table_path, query, "rent")
-    except Exception as e:
-        logger.warning(f"[scb] fetch_rent_data SCB query failed: {e}")
+    rent_per_sqm: dict[str, float] = {}
+    cache = _cache_path("rent")
 
-    if not df.empty:
-        # Attempt to parse real data into zone/sqm/monthly_rent structure
+    if _is_cache_valid(cache):
+        logger.info("[scb] Using cached rent")
         try:
-            # SCB rent table may have Region and size dimension
-            # Try to map regions to our rent zones
-            rename = {}
-            for col in df.columns:
-                if "region" in col.lower() and "_code" in col.lower():
-                    rename[col] = "region_code"
-                elif col == "value":
-                    rename[col] = "monthly_rent"
-            df = df.rename(columns=rename)
-            df["monthly_rent"] = pd.to_numeric(df.get("monthly_rent", pd.Series()), errors="coerce")
-            df = df.dropna(subset=["monthly_rent"])
-            if not df.empty and "region_code" in df.columns:
-                # Map SCB region codes to our rent zones (best effort)
-                _SCB_REGION_TO_ZONE = {
-                    "0180": "1.01",  # Stockholm
-                    "0184": "1.02",  # Solna
-                    "0183": "1.02",  # Sundbyberg
-                    "0126": "1.04",  # Huddinge
-                    "1480": "2.01",  # Göteborg
-                    "1280": "3.01",  # Malmö
-                    "0380": "4.01",  # Uppsala
-                }
-                df["rent_zone"] = df["region_code"].map(_SCB_REGION_TO_ZONE)
-                df = df.dropna(subset=["rent_zone"])
-                if not df.empty:
-                    df["sqm"] = 60.0  # Approximate if size dim not available
-                    return df[["rent_zone", "sqm", "monthly_rent"]].copy()
+            rent_per_sqm = json.load(open(cache))
+        except Exception:
+            pass
+    else:
+        try:
+            resp = requests.post(url, json=query, timeout=60)
+            resp.raise_for_status()
+            data = resp.json()
+            # Plain PxWeb JSON: {"columns": [...], "data": [{"key": [...], "values": [...]}]}
+            for row in data.get("data", []):
+                region_code = str(row["key"][0]).zfill(4)
+                try:
+                    val = float(row["values"][0])
+                    if val > 0:
+                        rent_per_sqm[region_code] = val
+                except (ValueError, IndexError):
+                    pass
+            if rent_per_sqm:
+                json.dump(rent_per_sqm, open(cache, "w"))
+                logger.info(f"[scb] rent: {len(rent_per_sqm)} municipalities cached")
         except Exception as e:
-            logger.warning(f"[scb] fetch_rent_data parsing real data failed: {e} — using synthetic")
+            logger.warning(f"[scb] fetch_rent_data failed: {e} — using synthetic")
 
-    # ── Synthetic rent estimates by zone ─────────────────────────────────────
+    if rent_per_sqm:
+        # Map municipality codes to rent zones
+        _MUNI_TO_ZONE = {
+            "0180": "1.01", "0181": "1.01", "0182": "1.01", "0183": "1.02",
+            "0184": "1.02", "0186": "1.02", "0187": "1.02", "0188": "1.02",
+            "0191": "1.03", "0192": "1.03", "0127": "1.03", "0128": "1.03",
+            "0126": "1.04", "0136": "1.04", "0138": "1.04", "0139": "1.04",
+            "1480": "2.01", "1481": "2.01", "1482": "2.01", "1484": "2.02",
+            "1485": "2.02", "1486": "2.02", "1487": "2.02", "1488": "2.03",
+            "1280": "3.01", "1281": "3.01", "1282": "3.01", "1283": "3.02",
+            "1285": "3.02", "1286": "3.03", "1287": "3.03", "1290": "3.04",
+            "0380": "4.01", "0381": "4.01", "0382": "4.01",
+        }
+        # Average rent/sqm per zone
+        zone_sqm_rents: dict[str, list[float]] = {}
+        for muni_code, rent_sqm in rent_per_sqm.items():
+            zone = _MUNI_TO_ZONE.get(muni_code, "7.00")
+            zone_sqm_rents.setdefault(zone, []).append(rent_sqm)
+
+        SIZE_BRACKETS = [30, 45, 60, 75, 90, 105]
+        rows = []
+        for zone, rents in zone_sqm_rents.items():
+            avg_rent_sqm = sum(rents) / len(rents)
+            for sqm in SIZE_BRACKETS:
+                rows.append({
+                    "rent_zone": zone,
+                    "sqm": float(sqm),
+                    "monthly_rent": round(avg_rent_sqm * sqm, 0),
+                })
+        if rows:
+            return pd.DataFrame(rows)
+
+    # ── Synthetic fallback ────────────────────────────────────────────────────
     logger.info("[scb] Generating synthetic rent estimates by zone")
-
     ZONE_BASE_RENTS = {
-        "1.01": 18000,
-        "1.02": 14000,
-        "1.03": 12000,
-        "1.04": 10500,
-        "2.01": 11000,
-        "2.02": 9500,
-        "2.03": 8500,
-        "3.01": 9500,
-        "3.02": 8500,
-        "3.03": 8000,
-        "3.04": 7000,
-        "4.01": 9500,
-        "5.00": 8500,
-        "6.00": 7000,
-        "7.00": 5500,
+        "1.01": 18000, "1.02": 14000, "1.03": 12000, "1.04": 10500,
+        "2.01": 11000, "2.02": 9500,  "2.03": 8500,
+        "3.01": 9500,  "3.02": 8500,  "3.03": 8000,  "3.04": 7000,
+        "4.01": 9500,  "5.00": 8500,  "6.00": 7000,  "7.00": 5500,
     }
-
     SIZE_BRACKETS = [30, 45, 60, 75, 90, 105]
     rows = []
     for zone, base_rent in ZONE_BASE_RENTS.items():
         for sqm in SIZE_BRACKETS:
-            # Power-law scaling: larger apartments have lower rent/sqm
-            rent = base_rent * (sqm / 60) ** 0.75
             rows.append({
                 "rent_zone": zone,
                 "sqm": float(sqm),
-                "monthly_rent": round(rent, 0),
+                "monthly_rent": round(base_rent * (sqm / 60) ** 0.75, 0),
             })
-
     return pd.DataFrame(rows)
 
 
@@ -397,16 +371,29 @@ def fetch_population() -> pd.DataFrame:
     Fetch population by municipality from SCB.
 
     Table: BE/BE0101/BE0101A/BefolkningNy
+    Queried in batches (one sex at a time) to stay under SCB cell limits.
 
     Returns
     -------
     DataFrame with columns: municipality_code, population
     """
-    table_path = SCB_TABLES.get("population", "BE/BE0101/BE0101A/BefolkningNy")
+    table_path = "BE/BE0101/BE0101A/BefolkningNy"
+
+    # SCB cell limit: query one sex at a time, one age bracket (0-9) × all municipalities
+    # Simpler: request only "0" age (infants) to verify structure, then use sex=1+2
+    # Best approach: filter to working-age population (20-64) as a proxy, or
+    # use sex='1' only and double it.
+    # Easiest: request ContentsCode + latest year, one sex, no age filter (all ages)
+    # ~290 municipalities × 100 ages × 1 sex × 4 civil statuses = ~116,000 cells → OK
+    # But we need to exclude Civilstand dimension by not specifying it → all 4 values
+    # 290 × ~100 ages × 4 civil statuses = ~116,000 → borderline
+    # Safe approach: request sex=1 only, all ages, all civil statuses, then double
     query = {
         "query": [
-            {"code": "Region",       "selection": {"filter": "all",  "values": ["*"]}},
-            {"code": "Kon",          "selection": {"filter": "item", "values": ["1", "2"]}},
+            {"code": "Region",       "selection": {"filter": "all", "values": ["*"]}},
+            {"code": "Civilstand",   "selection": {"filter": "all", "values": ["*"]}},
+            {"code": "Alder",        "selection": {"filter": "all", "values": ["*"]}},
+            {"code": "Kon",          "selection": {"filter": "item", "values": ["1"]}},
             {"code": "ContentsCode", "selection": {"filter": "item", "values": ["BE0101N1"]}},
             {"code": "Tid",          "selection": {"filter": "top",  "values": ["1"]}},
         ],
@@ -428,14 +415,16 @@ def fetch_population() -> pd.DataFrame:
             if "region" in col.lower() and "_code" in col.lower():
                 rename[col] = "municipality_code"
             elif col == "value":
-                rename[col] = "population"
+                rename[col] = "population_half"
         df = df.rename(columns=rename)
-        df["population"] = pd.to_numeric(df["population"], errors="coerce")
+        df["population_half"] = pd.to_numeric(df["population_half"], errors="coerce")
 
-        # Sum across sexes
+        # Sum across ages and civil statuses, then double for both sexes
         if "municipality_code" in df.columns:
-            df = df.groupby("municipality_code", as_index=False)["population"].sum()
-        return df[["municipality_code", "population"]].dropna()
+            df = df.groupby("municipality_code", as_index=False)["population_half"].sum()
+            df["population"] = (df["population_half"] * 2).round(0)
+            return df[["municipality_code", "population"]].dropna()
+        return pd.DataFrame()
 
     except Exception as e:
         logger.warning(f"[scb] fetch_population processing error: {e}")
@@ -446,7 +435,8 @@ def fetch_employment() -> pd.DataFrame:
     """
     Fetch employment by municipality and industry from SCB.
 
-    Table: AM/AM0207/AM0207K/RAKS07KN
+    Table: AM/AM0207/AM0207Z/NattSni07KonKN
+    (Förvärvsarbetande 16-74 år efter region och näring, 2019-2021)
 
     Computes Herfindahl-Hirschman Index (HHI) of employment concentration
     per municipality as a proxy for job market diversity/risk.
@@ -455,11 +445,12 @@ def fetch_employment() -> pd.DataFrame:
     -------
     DataFrame with columns: municipality_code, employment_hhi
     """
-    table_path = SCB_TABLES.get("employment", "AM/AM0207/AM0207K/RAKS07KN")
+    table_path = "AM/AM0207/AM0207Z/NattSni07KonKN"
     query = {
         "query": [
             {"code": "Region",       "selection": {"filter": "all", "values": ["*"]}},
             {"code": "SNI2007",      "selection": {"filter": "all", "values": ["*"]}},
+            {"code": "Kon",          "selection": {"filter": "item", "values": ["1", "2"]}},
             {"code": "ContentsCode", "selection": {"filter": "all", "values": ["*"]}},
             {"code": "Tid",          "selection": {"filter": "top", "values": ["1"]}},
         ],
@@ -513,20 +504,25 @@ def fetch_employment() -> pd.DataFrame:
 
 def fetch_wages() -> pd.DataFrame:
     """
-    Fetch average monthly wages by municipality from SCB.
+    Fetch mean earned income by municipality from SCB as a wage proxy.
 
-    Table: AM/AM0102/AM0102H/LonKNSektJ
+    Table: HE/HE0110/HE0110A/SamForvInk1
+    Variable HE0110J7 = mean earned income (tkr/year) for ages 20+, both sexes.
+    Converted to monthly SEK for latest_wage; wage_growth_1y from YoY change.
 
     Returns
     -------
     DataFrame with columns: municipality_code, latest_wage, wage_growth_1y
     """
-    table_path = SCB_TABLES.get("wages", "AM/AM0102/AM0102H/LonKNSektJ")
+    table_path = SCB_TABLES.get("wages", "HE/HE0110/HE0110A/SamForvInk1")
     query = {
         "query": [
-            {"code": "Region",       "selection": {"filter": "all",  "values": ["*"]}},
-            {"code": "ContentsCode", "selection": {"filter": "all",  "values": ["*"]}},
-            {"code": "Tid",          "selection": {"filter": "top",  "values": ["2"]}},
+            {"code": "Region",       "selection": {"filter": "all", "values": ["*"]}},
+            {"code": "Kon",          "selection": {"filter": "item",  "values": ["1", "2"]}},
+            {"code": "Alder",        "selection": {"filter": "item",  "values": ["tot20+"]}},
+            {"code": "Inkomstklass", "selection": {"filter": "item",  "values": ["TOT"]}},
+            {"code": "ContentsCode", "selection": {"filter": "item",  "values": ["HE0110J7"]}},
+            {"code": "Tid",          "selection": {"filter": "top",   "values": ["3"]}},
         ],
         "response": {"format": "json-stat2"},
     }
@@ -543,35 +539,36 @@ def fetch_wages() -> pd.DataFrame:
     try:
         rename = {}
         for col in df.columns:
-            if "region" in col.lower() and "_code" in col.lower():
+            col_lower = col.lower()
+            if "region" in col_lower and "_code" in col_lower:
                 rename[col] = "municipality_code"
-            elif "tid" in col.lower() and "_code" in col.lower():
+            elif "tid" in col_lower and "_code" in col_lower:
                 rename[col] = "year"
             elif col == "value":
-                rename[col] = "wage"
+                rename[col] = "income_tkr"
         df = df.rename(columns=rename)
-        df["wage"] = pd.to_numeric(df["wage"], errors="coerce")
-        df = df.dropna(subset=["wage", "municipality_code"])
-        if "year" not in df.columns:
-            df["year"] = "latest"
 
-        df = df.sort_values(["municipality_code", "year"])
-        result_rows = []
-        for muni_code, grp in df.groupby("municipality_code"):
+        df["income_tkr"] = pd.to_numeric(df.get("income_tkr", pd.Series(dtype=float)), errors="coerce")
+        df = df.dropna(subset=["income_tkr", "municipality_code"])
+        df["year"] = df["year"].astype(str)
+
+        # Average across genders per municipality/year
+        df = df.groupby(["municipality_code", "year"], as_index=False)["income_tkr"].mean()
+
+        wage_rows = []
+        for muni_code, grp in df.sort_values(["municipality_code", "year"]).groupby("municipality_code"):
             grp = grp.sort_values("year").reset_index(drop=True)
-            latest_wage = float(grp["wage"].iloc[-1])
-            wage_growth_1y = np.nan
-            if len(grp) >= 2:
-                prev_wage = float(grp["wage"].iloc[-2])
-                if prev_wage > 0:
-                    wage_growth_1y = (latest_wage / prev_wage - 1) * 100
-            result_rows.append({
+            latest_tkr = grp.iloc[-1]["income_tkr"]
+            wage_rows.append({
                 "municipality_code": muni_code,
-                "latest_wage": latest_wage,
-                "wage_growth_1y": wage_growth_1y,
+                "latest_wage": latest_tkr * 1000 / 12,  # annual tkr → monthly SEK
+                "wage_growth_1y": (
+                    (latest_tkr / grp.iloc[-2]["income_tkr"] - 1) * 100
+                    if len(grp) >= 2 and grp.iloc[-2]["income_tkr"] > 0 else np.nan
+                ),
             })
 
-        return pd.DataFrame(result_rows)
+        return pd.DataFrame(wage_rows)
 
     except Exception as e:
         logger.warning(f"[scb] fetch_wages processing error: {e}")
@@ -580,20 +577,22 @@ def fetch_wages() -> pd.DataFrame:
 
 def fetch_construction_permits() -> pd.DataFrame:
     """
-    Fetch building permits by municipality from SCB.
+    Fetch building permits (new apartments) by municipality from SCB.
 
-    Table: BO/BO0701/BO0701A/BygglovBGT
+    Table: BO/BO0101/BO0101C/LagenhetNyKv16
+    (Lägenheter i nybyggda hus efter region och hustyp, quarterly)
 
     Returns
     -------
-    DataFrame with columns: municipality_code, permits_per_1000, permit_momentum
+    DataFrame with columns: municipality_code, permits_raw, permit_momentum
     """
-    table_path = SCB_TABLES.get("construction", "BO/BO0701/BO0701A/BygglovBGT")
+    table_path = "BO/BO0101/BO0101C/LagenhetNyKv16"
     query = {
         "query": [
             {"code": "Region",       "selection": {"filter": "all", "values": ["*"]}},
+            {"code": "Hustyp",       "selection": {"filter": "item", "values": ["FLERBO", "SMÅHUS"]}},
             {"code": "ContentsCode", "selection": {"filter": "all", "values": ["*"]}},
-            {"code": "Tid",          "selection": {"filter": "top", "values": ["4"]}},
+            {"code": "Tid",          "selection": {"filter": "top", "values": ["8"]}},
         ],
         "response": {"format": "json-stat2"},
     }
@@ -646,6 +645,68 @@ def fetch_construction_permits() -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def fetch_debt_burden() -> pd.DataFrame:
+    """
+    Fetch household mortgage debt burden proxy by municipality from SCB.
+
+    Table: HE/HE0110/HE0110B/Skatteutrakning
+    Variable SREDKAP = tax reduction for capital deficit (mortgage interest deduction).
+    Mean deduction value per taxpayer is a reliable proxy for mortgage debt load.
+    Normalized to 0-1 scale (min-max across all municipalities).
+
+    Returns
+    -------
+    DataFrame with columns: municipality_code, debt_burden_pct
+    """
+    table_path = SCB_TABLES.get("debt_burden", "HE/HE0110/HE0110B/Skatteutrakning")
+    query = {
+        "query": [
+            {"code": "Region",          "selection": {"filter": "all", "values": ["*"]}},
+            {"code": "Skatteutrakning", "selection": {"filter": "item", "values": ["SREDKAP"]}},
+            {"code": "Kon",             "selection": {"filter": "item", "values": ["1", "2"]}},
+            {"code": "ContentsCode",    "selection": {"filter": "item", "values": ["000006VL"]}},
+            {"code": "Tid",             "selection": {"filter": "top",  "values": ["1"]}},
+        ],
+        "response": {"format": "json-stat2"},
+    }
+
+    try:
+        df = _query_scb(table_path, query, "debt_burden")
+    except Exception as e:
+        logger.warning(f"[scb] fetch_debt_burden failed: {e}")
+        return pd.DataFrame()
+
+    if df.empty:
+        return df
+
+    try:
+        rename = {}
+        for col in df.columns:
+            if "region" in col.lower() and "_code" in col.lower():
+                rename[col] = "municipality_code"
+            elif col == "value":
+                rename[col] = "deduction_tkr"
+        df = df.rename(columns=rename)
+
+        df["deduction_tkr"] = pd.to_numeric(df.get("deduction_tkr", pd.Series(dtype=float)), errors="coerce")
+        df = df.dropna(subset=["deduction_tkr", "municipality_code"])
+
+        # Average across genders
+        df = df.groupby("municipality_code", as_index=False)["deduction_tkr"].mean()
+
+        # Normalize to 0-1: higher deduction = higher debt burden
+        lo, hi = df["deduction_tkr"].min(), df["deduction_tkr"].max()
+        df["debt_burden_pct"] = (
+            (df["deduction_tkr"] - lo) / (hi - lo) if hi > lo else 0.5
+        )
+
+        return df[["municipality_code", "debt_burden_pct"]].dropna()
+
+    except Exception as e:
+        logger.warning(f"[scb] fetch_debt_burden processing error: {e}")
+        return pd.DataFrame()
+
+
 # ── Master builder ────────────────────────────────────────────────────────────
 
 def build_region_features() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -679,6 +740,23 @@ def build_region_features() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     employment = fetch_employment()
     wages = fetch_wages()
     construction = fetch_construction_permits()
+    debt = fetch_debt_burden()
+
+    # ── Normalise municipality_code to zero-padded 4-char string ─────────────
+    # SCB returns codes as integers (180) but the municipality JSON uses "0180"
+    def _norm_code(df: pd.DataFrame) -> pd.DataFrame:
+        if not df.empty and "municipality_code" in df.columns:
+            df["municipality_code"] = (
+                df["municipality_code"].astype(str).str.zfill(4)
+            )
+        return df
+
+    prices      = _norm_code(prices)
+    population  = _norm_code(population)
+    employment  = _norm_code(employment)
+    wages       = _norm_code(wages)
+    construction = _norm_code(construction)
+    debt        = _norm_code(debt)
 
     # ── Derive index_signals from housing prices ───────────────────────────────
     # SCB housing prices are annual, so approximate QoQ signals from YoY
@@ -704,12 +782,33 @@ def build_region_features() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         except Exception as e:
             logger.warning(f"[scb] index_signals derivation failed: {e}")
 
-    # ── Build base from housing prices ────────────────────────────────────────
-    if prices.empty:
-        logger.warning("[scb] No housing price data — region_features will be empty")
-        return pd.DataFrame(), rent_data, index_signals
+    # ── Build base from municipality list (JSON file) ─────────────────────────
+    # Don't depend on housing prices — use the static municipality list as foundation
+    import json as _json
+    _muni_path = Path(__file__).parent.parent / "mapping" / "se_municipality_codes.json"
+    with open(_muni_path, "r", encoding="utf-8") as f:
+        _muni_data = _json.load(f)
+    base_munis = pd.DataFrame([
+        {
+            "municipality_code": m["code"],
+            "municipality_name": m["name"],
+            "municipality_clean": m["name"].strip().lower(),
+        }
+        for m in _muni_data["municipalities"]
+    ])
 
-    region_features = prices.rename(columns={"avg_price_sqm": "latest_price_sqm"}).copy()
+    # Join housing prices if available
+    if not prices.empty and "municipality_code" in prices.columns:
+        prices_sub = prices.rename(columns={"avg_price_sqm": "latest_price_sqm"})
+        price_cols = [c for c in ["municipality_code", "latest_price_sqm",
+                                   "price_growth_1y", "price_growth_3y"] if c in prices_sub.columns]
+        base_munis = base_munis.merge(prices_sub[price_cols], on="municipality_code", how="left")
+    else:
+        base_munis["latest_price_sqm"] = np.nan
+        base_munis["price_growth_1y"] = np.nan
+        base_munis["price_growth_3y"] = np.nan
+
+    region_features = base_munis
 
     # ── Join population ───────────────────────────────────────────────────────
     if not population.empty and "municipality_code" in population.columns:
@@ -758,12 +857,21 @@ def build_region_features() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         region_features["permits_per_1000"] = np.nan
         region_features["permit_momentum"] = np.nan
 
+    # ── Join debt burden ──────────────────────────────────────────────────────
+    if not debt.empty and "municipality_code" in debt.columns:
+        region_features = region_features.merge(
+            debt[["municipality_code", "debt_burden_pct"]],
+            on="municipality_code", how="left",
+        )
+    else:
+        region_features["debt_burden_pct"] = np.nan
+
     # ── Ensure all expected columns exist ────────────────────────────────────
     expected_cols = [
         "municipality_code", "municipality_name", "municipality_clean",
         "price_growth_1y", "price_growth_3y", "latest_price_sqm",
         "population", "employment_hhi", "latest_wage", "wage_growth_1y",
-        "permits_per_1000", "permit_momentum",
+        "permits_per_1000", "permit_momentum", "debt_burden_pct",
     ]
     for col in expected_cols:
         if col not in region_features.columns:

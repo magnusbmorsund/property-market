@@ -278,73 +278,92 @@ def _parse_listing_html(html: str, url: str, listing_id: str) -> dict:
                 data["address"] = text
                 break
 
-    # ── Key-value pairs from <dt>/<dd> definition lists ──────────────────────
+    # ── __NEXT_DATA__ Apollo state (primary source — Hemnet is a Next.js app) ──
+    # Hemnet no longer uses <dt>/<dd> — all property facts live in Apollo cache.
+    next_script = soup.find("script", id="__NEXT_DATA__")
+    if next_script:
+        try:
+            next_data = _json.loads(next_script.string or "")
+            apollo = next_data.get("props", {}).get("apolloState", {})
+
+            # Helper: resolve Apollo $ref or return value directly
+            def _resolve(val):
+                if isinstance(val, dict):
+                    ref = val.get("__ref")
+                    if ref:
+                        return apollo.get(ref, {})
+                return val if val is not None else {}
+
+            listing_key = f"ActivePropertyListing:{listing_id}"
+            prop = apollo.get(listing_key, {})
+
+            if prop:
+                # Living area (sqm)
+                if "sqm" not in data and prop.get("livingArea") is not None:
+                    data["sqm"] = float(prop["livingArea"])
+
+                # Rooms
+                if "rooms" not in data and prop.get("numberOfRooms") is not None:
+                    data["rooms"] = int(prop["numberOfRooms"])
+
+                # Monthly fee (avgift)
+                if "monthly_fee" not in data:
+                    fee = _resolve(prop.get("fee"))
+                    if isinstance(fee, dict) and fee.get("amount") is not None:
+                        data["monthly_fee"] = float(fee["amount"])
+
+                # Asking price
+                if "asking_price" not in data:
+                    ap = _resolve(prop.get("askingPrice"))
+                    if isinstance(ap, dict) and ap.get("amount") is not None:
+                        data["asking_price"] = float(ap["amount"])
+
+                # Operating cost (driftkostnad)
+                if "operating_cost" not in data:
+                    rc = _resolve(prop.get("runningCosts"))
+                    if isinstance(rc, dict) and rc.get("amount") is not None:
+                        data["operating_cost"] = float(rc["amount"])
+
+                # Year built
+                if "year_built" not in data and prop.get("constructionYear") is not None:
+                    yr = prop["constructionYear"]
+                    if 1800 < yr < 2030:
+                        data["year_built"] = int(yr)
+
+                # Property type
+                if "property_type" not in data:
+                    hf = _resolve(prop.get("housingForm"))
+                    if isinstance(hf, dict) and hf.get("name"):
+                        data["property_type"] = hf["name"]
+
+                # Ownership type
+                if "ownership_type" not in data:
+                    tenure = _resolve(prop.get("tenure"))
+                    if isinstance(tenure, dict) and tenure.get("name"):
+                        data["ownership_type"] = tenure["name"]
+
+        except Exception:
+            pass  # fall through to HTML fallback
+
+    # ── HTML label fallback (legacy dt/dd for any future layout changes) ─────
+    _label_map_lower = {k.lower(): v for k, v in FIELD_MAP.items()}
     for dt in soup.find_all("dt"):
         label = dt.get_text(strip=True).lower().rstrip(":")
         dd = dt.find_next_sibling("dd")
-        if not dd:
+        if not dd or label not in _label_map_lower:
+            continue
+        field = _label_map_lower[label]
+        if field in data:
             continue
         value_text = dd.get_text(strip=True)
-
-        if label in FIELD_MAP:
-            field = FIELD_MAP[label]
-            if field in ("asking_price", "sqm", "sqm_secondary", "monthly_fee",
-                         "operating_cost", "plot_area", "rooms"):
-                data[field] = _parse_number(value_text)
-            elif field == "year_built":
-                num = _parse_number(value_text)
-                data[field] = int(num) if num and 1800 < num < 2030 else None
-            elif field == "rooms":
-                num = _parse_number(value_text)
-                data[field] = int(num) if num else None
-            else:
-                data[field] = value_text
-
-    # ── Table-based layouts ───────────────────────────────────────────────────
-    for tr in soup.find_all("tr"):
-        cells = tr.find_all(["th", "td"])
-        if len(cells) >= 2:
-            label = cells[0].get_text(strip=True).lower().rstrip(":")
-            value_text = cells[1].get_text(strip=True)
-            if label in FIELD_MAP and FIELD_MAP[label] not in data:
-                field = FIELD_MAP[label]
-                if field in ("asking_price", "sqm", "sqm_secondary", "monthly_fee",
-                             "operating_cost", "plot_area"):
-                    data[field] = _parse_number(value_text)
-                elif field == "year_built":
-                    num = _parse_number(value_text)
-                    data[field] = int(num) if num and 1800 < num < 2030 else None
-                else:
-                    data[field] = value_text
-
-    # ── JSON-LD structured data (secondary pass for price/address) ───────────
-    for script in soup.find_all("script", type="application/ld+json"):
-        try:
-            ld = _json.loads(script.string or "")
-            if isinstance(ld, dict) and ld.get("@type") in (
-                "Product", "RealEstateListing", "Residence", "Apartment", "House"
-            ):
-                if "title" not in data and "name" in ld:
-                    data["title"] = ld["name"]
-                if "address" not in data:
-                    addr = ld.get("address", {})
-                    if isinstance(addr, dict):
-                        parts = [
-                            addr.get("streetAddress", ""),
-                            addr.get("postalCode", ""),
-                            addr.get("addressLocality", ""),
-                        ]
-                        data["address"] = " ".join(p for p in parts if p)
-                offers = ld.get("offers", {})
-                if isinstance(offers, dict) and "asking_price" not in data:
-                    price = offers.get("price")
-                    if price:
-                        try:
-                            data["asking_price"] = float(price)
-                        except (ValueError, TypeError):
-                            pass
-        except (ValueError, TypeError, AttributeError):
-            continue
+        if field in ("asking_price", "sqm", "sqm_secondary", "monthly_fee",
+                     "operating_cost", "plot_area"):
+            data[field] = _parse_number(value_text)
+        elif field in ("year_built", "rooms"):
+            num = _parse_number(value_text)
+            data[field] = int(num) if num else None
+        else:
+            data[field] = value_text
 
     # ── Derived fields ────────────────────────────────────────────────────────
     # Sweden has no "fellesgjeld" equivalent — total_price_calc = asking_price

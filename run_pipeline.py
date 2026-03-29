@@ -603,7 +603,7 @@ def main():
     # ── Sweden pipeline ───────────────────────────────────────────────────────
     if args.country == "sweden":
         _HEMNET_LOCATION_PARAMS = {
-            "stockholm":  "location_ids[]=898051",
+            "stockholm":  "location_ids[]=898741",
             "gothenburg": "location_ids[]=898165",
             "malmo":      "location_ids[]=898273",
             "uppsala":    "location_ids[]=898319",

@@ -58,12 +58,13 @@ FRED_SERIES_SE = {
 SCB_BASE_URL = "https://api.scb.se/OV0104/v1/doris/sv/ssd"
 
 SCB_TABLES = {
-    "housing_prices": "BO/BO0501/BO0501A/FastprisKNRegK",
-    "rent":           "BO/BO0202/BO0202B/HyraNytUthB",
+    "housing_prices": "BO/BO0501/BO0501B/FastprisSHRegionAr",  # Småhus purchase price by municipality, annual
+    "rent":           "BO/BO0406/BO0406E/BO0406Tab01",   # Median rent per sqm by municipality
     "population":     "BE/BE0101/BE0101A/BefolkningNy",
-    "employment":     "AM/AM0207/AM0207K/RAKS07KN",
-    "wages":          "AM/AM0102/AM0102H/LonKNSektJ",
-    "construction":   "BO/BO0701/BO0701A/BygglovBGT",
+    "employment":     "AM/AM0207/AM0207Z/NattSni07KonKN",
+    "wages":          "HE/HE0110/HE0110A/SamForvInk1",         # Mean earned income by municipality (proxy for wages)
+    "debt_burden":    "HE/HE0110/HE0110B/Skatteutrakning",     # Mortgage interest deduction (SREDKAP) as debt proxy
+    "construction":   "BO/BO0101/BO0101C/LagenhetNyKv16",
 }
 
 # ── Hemnet.se ─────────────────────────────────────────────────────────────────
@@ -77,7 +78,7 @@ HEMNET_DELAY_BETWEEN_BATCHES = 0.5
 # NOTE: These are Hemnet's internal location IDs — verify via Hemnet search UI
 # if scraping returns no results (inspect network request to /bostader).
 HEMNET_CITY_LOCATION_IDS = {
-    "stockholm":  "898051",   # Stockholm municipality
+    "stockholm":  "898741",   # Stockholm municipality (inner city; use 17744 for full county)
     "gothenburg": "898165",   # Göteborg municipality
     "malmo":      "898273",   # Malmö municipality
     "uppsala":    "898319",   # Uppsala municipality
