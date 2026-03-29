@@ -107,7 +107,7 @@ _PLACE_ALIASES = {
     "lørenskog": "3211",   # Lørenskog
     "fjellhamar": "3211",  # Lørenskog
     "rælingen": "3213",    # Rælingen
-    "nittedal": "3233",    # Nittedal
+    "nittedal": "3232",    # Nittedal
     "nesoddtangen": "3214", # Nesodden
     "vinterbro": "3218",   # Ås
     "heimdal": "5001",     # Trondheim
@@ -151,15 +151,15 @@ _PLACE_ALIASES = {
     "lillesand": "4215",   # Lillesand
     "tvedestrand": "4213", # Tvedestrand
     "risør": "4211",       # Risør
-    "notodden": "3808",    # Notodden
-    "rjukan": "3812",      # Tinn
-    "bø": "3817",          # Bø
+    "notodden": "3905",    # Notodden
+    "rjukan": "3933",      # Tinn
+    "bø": "3917",          # Midt-Telemark (Bø)
     "horten": "3801",      # Horten
     "holmestrand": "3802", # Holmestrand
     "stavern": "3805",     # Larvik
-    "stathelle": "3814",   # Bamble
+    "stathelle": "3909",   # Bamble
     "brevik": "3901",      # Porsgrunn
-    "langesund": "3814",   # Bamble
+    "langesund": "3909",   # Bamble
     "kongsvinger": "3401",  # Kongsvinger
     "moelv": "3412",       # Ringsaker
     "brumunddal": "3412",  # Ringsaker
@@ -170,9 +170,9 @@ _PLACE_ALIASES = {
     "dombås": "3432",      # Dovre
     "raufoss": "3415",     # Vestre Toten
     "gran": "3446",        # Gran
-    "jevnaker": "3053",    # Jevnaker
-    "lunner": "3054",      # Lunner
-    "flå": "3313",         # Flå
+    "jevnaker": "3340",    # Jevnaker
+    "lunner": "3342",      # Lunner
+    "flå": "3320",         # Flå
     "gol": "3340",         # Gol
     "hemsedal": "3338",    # Hemsedal
     "ål": "3336",          # Ål
@@ -198,9 +198,9 @@ _PLACE_ALIASES = {
     "nesbru": "3203",      # Asker
     "slemmestad": "3203",  # Asker
     "spikkestad": "3316",  # Modum? Actually Røyken→Asker
-    "lier": "3304",        # Lier
-    "tranby": "3304",      # Lier
-    "sylling": "3304",     # Lier
+    "lier": "3312",        # Lier
+    "tranby": "3312",      # Lier
+    "sylling": "3312",     # Lier
     "åmot": "3422",        # Åmot
     "rena": "3422",        # Åmot
     "tynset": "3427",      # Tynset
@@ -259,7 +259,7 @@ def map_address_to_municipality(address: str) -> tuple[str, str]:
 
         if clean in _ALIASES:
             code = _ALIASES[clean]
-            return (code, _CODE_TO_NAME[code])
+            return (code, _CODE_TO_NAME.get(code, code))
 
     # Strategy 2: Check if any known municipality name appears as a whole word
     addr_lower = address.lower()
@@ -267,7 +267,7 @@ def map_address_to_municipality(address: str) -> tuple[str, str]:
     for name in sorted(_ALL_NAMES, key=len, reverse=True):
         if len(name) >= 3 and re.search(r'(?<!\w)' + re.escape(name) + r'(?!\w)', addr_lower):
             code = _ALIASES[name]
-            return (code, _CODE_TO_NAME[code])
+            return (code, _CODE_TO_NAME.get(code, code))
 
     # Strategy 3: Fuzzy match on the last meaningful part
     for part in reversed(parts):
@@ -277,7 +277,7 @@ def map_address_to_municipality(address: str) -> tuple[str, str]:
         matches = difflib.get_close_matches(clean, _ALL_NAMES, n=1, cutoff=0.7)
         if matches:
             code = _ALIASES[matches[0]]
-            return (code, _CODE_TO_NAME[code])
+            return (code, _CODE_TO_NAME.get(code, code))
 
     logger.debug(f"[mapper] Could not map address: {address}")
     return ("0000", "Ukjent")

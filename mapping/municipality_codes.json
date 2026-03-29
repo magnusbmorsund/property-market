@@ -264,6 +264,7 @@
     {"code": "4214", "name": "Bjørnafjorden", "region_code": "42", "region_name": "Vestland", "rent_zone": "07"},
     {"code": "4215", "name": "Austevoll", "region_code": "42", "region_name": "Vestland", "rent_zone": "14"},
     {"code": "4216", "name": "Øygarden", "region_code": "42", "region_name": "Vestland", "rent_zone": "07"},
+    {"code": "4631", "name": "Øygarden", "region_code": "42", "region_name": "Vestland", "rent_zone": "07"},
     {"code": "4217", "name": "Askøy", "region_code": "42", "region_name": "Vestland", "rent_zone": "07"},
     {"code": "4218", "name": "Vaksdal", "region_code": "42", "region_name": "Vestland", "rent_zone": "14"},
     {"code": "4219", "name": "Modalen", "region_code": "42", "region_name": "Vestland", "rent_zone": "14"},
