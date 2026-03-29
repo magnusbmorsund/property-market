@@ -21,7 +21,18 @@ logger = logging.getLogger(__name__)
 
 
 def _minmax(series: pd.Series, invert: bool = False) -> pd.Series:
-    """Normalise to [0, 1]. invert=True means lower raw value = higher score."""
+    """Normalise to [0, 1]. invert=True means lower raw value = higher score.
+
+    NaN values are filled with the column median before normalisation so they
+    score at the midpoint. A warning is emitted when more than 20% of values
+    are NaN, as it indicates a data quality issue upstream.
+    """
+    nan_count = series.isna().sum()
+    if nan_count > 0 and nan_count / max(len(series), 1) > 0.2:
+        logger.warning(
+            f"[scorer] Signal '{series.name}' has {nan_count}/{len(series)} NaN values "
+            "— these will score at dataset median"
+        )
     s = series.fillna(series.median())
     mn, mx = s.min(), s.max()
     if mx == mn:

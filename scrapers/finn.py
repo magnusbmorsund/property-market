@@ -61,10 +61,14 @@ FIELD_MAP = {
 
 # ── Stage 1: Collect listing URLs ────────────────────────────────────────────
 
-async def _collect_listing_urls(max_pages: int = FINN_MAX_PAGES) -> list[dict]:
+async def _collect_listing_urls(max_pages: int = FINN_MAX_PAGES, location_params: str = "") -> list[dict]:
     """
     Use Playwright to navigate Finn.no search pages and extract listing URLs.
     Returns list of {url, finnkode} dicts.
+
+    location_params: pre-built query string fragment, e.g.
+      "location=0.20061"  for Oslo municipality
+      "lat=63.43049&lon=10.39506&radius=20000"  for Trondheim
     """
     from playwright.async_api import async_playwright
 
@@ -80,8 +84,11 @@ async def _collect_listing_urls(max_pages: int = FINN_MAX_PAGES) -> list[dict]:
         )
         page = await context.new_page()
 
+        loc_suffix = f"&{location_params}" if location_params else ""
+        consecutive_errors = 0
+        _MAX_CONSECUTIVE_ERRORS = 3
         for page_num in range(1, max_pages + 1):
-            url = f"{FINN_SEARCH_URL}?sort={FINN_DEFAULT_SORT}&page={page_num}"
+            url = f"{FINN_SEARCH_URL}?sort={FINN_DEFAULT_SORT}&page={page_num}{loc_suffix}"
             logger.info(f"[finn] Scraping search page {page_num}/{max_pages}...")
 
             try:
@@ -146,12 +153,19 @@ async def _collect_listing_urls(max_pages: int = FINN_MAX_PAGES) -> list[dict]:
                 logger.info(f"[finn] Page {page_num}: found {new_count} new listings "
                            f"(total: {len(listings)})")
 
+                consecutive_errors = 0  # reset on success
                 if new_count == 0 and page_num > 1:
                     logger.info("[finn] No new listings on page — stopping pagination")
                     break
 
             except Exception as e:
-                logger.warning(f"[finn] Error on search page {page_num}: {e}")
+                consecutive_errors += 1
+                logger.warning(f"[finn] Error on search page {page_num} "
+                               f"(consecutive={consecutive_errors}): {e}")
+                if consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
+                    logger.error(f"[finn] {_MAX_CONSECUTIVE_ERRORS} consecutive page errors — "
+                                 "aborting Stage 1. Finn.no may have changed structure.")
+                    break
                 continue
 
             await asyncio.sleep(FINN_DELAY_BETWEEN_PAGES)
@@ -187,21 +201,39 @@ def _parse_listing_html(html: str, url: str, finnkode: str) -> dict:
     if title_tag:
         data["title"] = title_tag.get_text(strip=True)
 
-    # ── Extract address from breadcrumb or location section ──────────────
-    # Try multiple patterns for address extraction
-    # Pattern 1: Look for location/address section
-    for selector in ["[data-testid='object-address']", ".u-t3", ".ads__ad__content__keys"]:
-        addr_el = soup.select_one(selector)
-        if addr_el:
-            data["address"] = addr_el.get_text(" ", strip=True)
-            break
+    # ── Extract address — JSON-LD first (structured, stable), HTML fallback ──
+    # Pattern 0: JSON-LD structured data (most reliable, independent of CSS)
+    import json as _json
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            ld = _json.loads(script.string or "")
+            if isinstance(ld, list):
+                ld = next((x for x in ld if isinstance(x, dict)), {})
+            addr = ld.get("address") or {}
+            if isinstance(addr, dict):
+                parts = [addr.get("streetAddress"), addr.get("postalCode"), addr.get("addressLocality")]
+                combined = " ".join(p for p in parts if p)
+                if combined:
+                    data["address"] = combined
+                    break
+            elif isinstance(addr, str) and addr:
+                data["address"] = addr
+                break
+        except Exception:
+            pass
 
-    # Pattern 2: Look in the page for address-like text near the title
+    # Pattern 1: HTML data-testid / CSS selectors (falls back if JSON-LD missing)
     if "address" not in data:
-        # Check for p tags near the title that contain address info
+        for selector in ["[data-testid='object-address']", ".u-t3", ".ads__ad__content__keys"]:
+            addr_el = soup.select_one(selector)
+            if addr_el:
+                data["address"] = addr_el.get_text(" ", strip=True)
+                break
+
+    # Pattern 2: postal-code heuristic in <p> tags
+    if "address" not in data:
         for p in soup.find_all("p"):
             text = p.get_text(strip=True)
-            # Address often has a 4-digit postal code
             if re.search(r"\d{4}\s+\w+", text) and len(text) < 200:
                 data["address"] = text
                 break
@@ -345,7 +377,8 @@ async def _fetch_listing_details(listing_urls: list[dict],
 # ── Public API ───────────────────────────────────────────────────────────────
 
 def scrape_listings(max_pages: int = FINN_MAX_PAGES,
-                    max_listings: int = None) -> pd.DataFrame:
+                    max_listings: int = None,
+                    location_params: str = "") -> pd.DataFrame:
     """
     Scrape Finn.no property listings. Two-stage:
       1. Playwright → collect listing URLs from search pages
@@ -366,7 +399,7 @@ def scrape_listings(max_pages: int = FINN_MAX_PAGES,
     start = time.time()
 
     # Stage 1: Collect URLs
-    listing_urls = asyncio.run(_collect_listing_urls(max_pages=max_pages))
+    listing_urls = asyncio.run(_collect_listing_urls(max_pages=max_pages, location_params=location_params))
 
     if not listing_urls:
         logger.warning("[finn] No listing URLs found — check if Finn.no structure changed")

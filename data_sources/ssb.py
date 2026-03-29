@@ -19,6 +19,10 @@ from config import SSB_BASE_URL, SSB_TABLES, CACHE_DIR, CACHE_TTL_HOURS
 
 logger = logging.getLogger(__name__)
 
+# Regex that matches SSB municipality names with reform-year suffixes like
+# "Oslo (-2019)" or "Larvik (2017-2019)". Used to filter out historical rows.
+_MUNI_REFORM_RE = r"\(-\d{4}\)|\(\d{4}-\d{4}\)"
+
 
 def _cache_path(table_id: str) -> Path:
     return CACHE_DIR / f"ssb_{table_id}.json"
@@ -31,7 +35,7 @@ def _is_cache_valid(path: Path) -> bool:
     return age_hours < CACHE_TTL_HOURS
 
 
-def _query_ssb(table_id: str, query: dict) -> pd.DataFrame:
+def _query_ssb(table_id: str, query: dict, retries: int = 3) -> pd.DataFrame:
     """POST a query to SSB API and return a DataFrame."""
     cache = _cache_path(table_id)
 
@@ -42,11 +46,33 @@ def _query_ssb(table_id: str, query: dict) -> pd.DataFrame:
     url = f"{SSB_BASE_URL}/{table_id}"
     logger.info(f"[ssb] Fetching table {table_id}...")
 
-    resp = requests.post(url, json=query, timeout=60)
-    resp.raise_for_status()
-    data = resp.json()
+    last_exc = None
+    for attempt in range(1, retries + 1):
+        try:
+            resp = requests.post(url, json=query, timeout=60)
+            resp.raise_for_status()
+            data = resp.json()
+            break
+        except Exception as e:
+            last_exc = e
+            if attempt < retries:
+                wait = 2 ** attempt
+                logger.warning(f"[ssb] Table {table_id} attempt {attempt} failed: {e} — retrying in {wait}s")
+                time.sleep(wait)
+    else:
+        logger.error(f"[ssb] Table {table_id} failed after {retries} attempts: {last_exc}")
+        return pd.DataFrame()
+
+    # Validate JSON-stat response has expected structure
+    if not isinstance(data, dict) or ("id" not in data and "dataset" not in data):
+        logger.error(f"[ssb] Table {table_id}: unexpected response structure — missing 'id'/'dataset' keys")
+        return pd.DataFrame()
 
     df = _parse_jsonstat(data)
+
+    if df.empty:
+        logger.warning(f"[ssb] Table {table_id}: parsed DataFrame is empty")
+        return df
 
     # Cache as records JSON
     df.to_json(cache, orient="records", force_ascii=False)
@@ -157,7 +183,7 @@ def fetch_price_per_sqm() -> pd.DataFrame:
     df = df.groupby(["municipality_code", "municipality", "year"], as_index=False)["price_sqm"].mean()
 
     # Filter to current municipalities (remove historical entries with year suffixes)
-    df = df[~df["municipality"].str.contains(r"\(-\d{4}\)|\(\d{4}-\d{4}\)", regex=True, na=False)]
+    df = df[~df["municipality"].str.contains(_MUNI_REFORM_RE, regex=True, na=False)]
 
     # Normalize municipality names for downstream joining
     df["municipality_clean"] = (
@@ -292,10 +318,25 @@ def fetch_population() -> pd.DataFrame:
         }
         url = f"{SSB_BASE_URL}/{SSB_TABLES['population']}"
         logger.info(f"[ssb] Fetching population (Kjonn={kjonn})...")
-        resp = requests.post(url, json=query, timeout=120)
-        resp.raise_for_status()
-        batch_df = _parse_jsonstat(resp.json())
-        all_dfs.append(batch_df)
+        last_exc = None
+        for attempt in range(1, 4):
+            try:
+                resp = requests.post(url, json=query, timeout=120)
+                resp.raise_for_status()
+                data = resp.json()
+                if not isinstance(data, dict) or ("id" not in data and "dataset" not in data):
+                    raise ValueError(f"Unexpected population response structure (Kjonn={kjonn})")
+                batch_df = _parse_jsonstat(data)
+                all_dfs.append(batch_df)
+                break
+            except Exception as e:
+                last_exc = e
+                if attempt < 3:
+                    wait = 2 ** attempt
+                    logger.warning(f"[ssb] Population Kjonn={kjonn} attempt {attempt} failed: {e} — retrying in {wait}s")
+                    time.sleep(wait)
+        else:
+            logger.error(f"[ssb] Population Kjonn={kjonn} failed after 3 attempts: {last_exc}")
 
     df = pd.concat(all_dfs, ignore_index=True)
 
@@ -483,7 +524,7 @@ def fetch_wages() -> pd.DataFrame:
     df["monthly_wage"] = pd.to_numeric(df["monthly_wage"], errors="coerce")
 
     # Filter to current municipalities
-    df = df[~df["municipality"].str.contains(r"\(-\d{4}\)|\(\d{4}-\d{4}\)", regex=True, na=False)]
+    df = df[~df["municipality"].str.contains(_MUNI_REFORM_RE, regex=True, na=False)]
     df["municipality_clean"] = (
         df["municipality"]
         .str.replace(r"\s*\(.*\)$", "", regex=True)
@@ -537,7 +578,7 @@ def fetch_construction() -> pd.DataFrame:
     df = df.groupby(group_cols, as_index=False)["permits"].sum()
 
     # Filter to current municipalities
-    df = df[~df["municipality"].str.contains(r"\(-\d{4}\)|\(\d{4}-\d{4}\)", regex=True, na=False)]
+    df = df[~df["municipality"].str.contains(_MUNI_REFORM_RE, regex=True, na=False)]
     df["municipality_clean"] = (
         df["municipality"]
         .str.replace(r"\s*\(.*\)$", "", regex=True)
@@ -576,9 +617,8 @@ def _compute_price_growth(price_df: pd.DataFrame) -> pd.DataFrame:
         else:
             growth_1y = np.nan
 
-        # 3Y growth (annualized)
-        three_years_back = grp.head(1) if len(grp) >= 4 else None
-        if three_years_back is not None and len(grp) >= 4:
+        # 3Y growth (annualized) — requires at least 4 yearly observations
+        if len(grp) >= 4:
             base_price = grp["price_sqm"].iloc[-4]
             if base_price > 0:
                 growth_3y = ((latest_price / base_price) ** (1/3) - 1) * 100
@@ -818,24 +858,27 @@ def build_region_features() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         features["mortgage_rate_current"] = np.nan
         features["mortgage_rate_trend"] = np.nan
 
-    # Ensure municipality_clean is present before merging wage/construction
+    # Ensure municipality_clean is present before name-based merges.
+    # price_growth (the base frame) always carries it; but if for some reason
+    # it was dropped during earlier merges, rebuild it from price_df.
     if "municipality_clean" not in features.columns:
-        name_lookup = price_df.drop_duplicates("municipality_code")[["municipality_code", "municipality_clean"]]
-        features = features.merge(name_lookup, on="municipality_code", how="left")
+        if "municipality_clean" in price_df.columns:
+            name_lookup = price_df.drop_duplicates("municipality_code")[["municipality_code", "municipality_clean"]]
+            features = features.merge(name_lookup, on="municipality_code", how="left")
+        else:
+            logger.warning("[ssb] municipality_clean not available — name-based merges will be skipped")
 
     # Merge wage growth (name-based — SSB codes may differ)
-    if not wage_growth.empty:
+    if not wage_growth.empty and "municipality_clean" in features.columns:
         features = features.merge(wage_growth, on="municipality_clean", how="left")
 
     # Merge construction pressure (name-based)
-    if not construction.empty:
+    if not construction.empty and "municipality_clean" in features.columns:
         features = features.merge(construction, on="municipality_clean", how="left")
 
-    # Ensure municipality_clean is present for name-based joining
+    # Final safety: ensure municipality_clean is present for downstream joins
     if "municipality_clean" not in features.columns:
-        # Build from municipality names in price_df
-        name_lookup = price_df.drop_duplicates("municipality_code")[["municipality_code", "municipality_clean"]]
-        features = features.merge(name_lookup, on="municipality_code", how="left")
+        features["municipality_clean"] = np.nan
 
     logger.info(f"[ssb] Region features: {len(features)} municipalities, "
                 f"{len(features.columns)} columns")

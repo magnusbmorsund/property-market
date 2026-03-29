@@ -423,6 +423,65 @@ def estimate_rent_for_municipality(municipality_code: str,
     return float(rent_data["monthly_rent"].median())
 
 
+def estimate_rents_vectorized(df: pd.DataFrame, rent_data: pd.DataFrame) -> pd.Series:
+    """
+    Vectorized rent estimation for all listings in df.
+
+    Replaces a row-wise apply() with:
+      1. Vectorized zone lookup via dict.map()
+      2. One interpolation call per unique (zone, sqm) pair
+
+    Returns a pd.Series of estimated monthly rents aligned to df.index.
+    """
+    if rent_data.empty:
+        return pd.Series(np.nan, index=df.index)
+
+    rent_data = rent_data.copy()
+    rent_data["zone_code"] = rent_data["zone_code"].apply(_norm_zone)
+
+    zone_map_lookup = {
+        "01": "1.01", "02": "1.02", "03": "1.03", "04": "1.04",
+        "05": "2.01", "06": "2.02",
+        "07": "3.01", "08": "4.01", "09": "5.00", "10": "6.00",
+        "11": "7.00", "12": "20.00", "13": "20.00", "14": "21.00",
+        "15": "21.00", "16": "22.00", "99": "21.00",
+    }
+
+    # Step 1: vectorized zone resolution
+    codes = df["municipality_code"].fillna("0000")
+    zones = codes.map(_MUNICIPALITY_TO_SSB_ZONE)  # NaN where not found
+    # For unmapped codes, use population-based fallback zone
+    unmapped_mask = zones.isna()
+    if unmapped_mask.any():
+        fallback_zones = codes[unmapped_mask].map(_CODE_TO_ZONE).fillna("99")
+        zones[unmapped_mask] = fallback_zones.map(zone_map_lookup).fillna("21.00")
+    zones = zones.fillna("21.00")
+
+    sqms = df["sqm"].fillna(70.0)
+
+    # Step 2: compute rent for each unique (zone, sqm) pair
+    unique_pairs = pd.DataFrame({"zone": zones, "sqm": sqms}).drop_duplicates()
+    pair_rents = {}
+    for _, pair in unique_pairs.iterrows():
+        zone_rows = rent_data[rent_data["zone_code"] == pair["zone"]]
+        if zone_rows.empty:
+            # Fallback: median across all zones per size bracket
+            if "sqm" in rent_data.columns:
+                median_by_sqm = rent_data.groupby("sqm")["monthly_rent"].median().reset_index()
+                rent_val = _interpolate_rent_by_sqm(median_by_sqm, pair["sqm"])
+            else:
+                rent_val = float(rent_data["monthly_rent"].median())
+        else:
+            rent_val = _interpolate_rent_by_sqm(zone_rows, pair["sqm"])
+        pair_rents[(pair["zone"], pair["sqm"])] = rent_val
+
+    # Step 3: map results back
+    return pd.Series(
+        [pair_rents.get((z, s), np.nan) for z, s in zip(zones, sqms)],
+        index=df.index,
+    )
+
+
 def enrich_listings_with_regions(listings_df: pd.DataFrame) -> pd.DataFrame:
     """
     Add municipality_code, region_code, region_name, and rent_zone
@@ -430,13 +489,15 @@ def enrich_listings_with_regions(listings_df: pd.DataFrame) -> pd.DataFrame:
     """
     df = listings_df.copy()
 
-    # Map each listing's address to municipality
+    # Map each listing's address to municipality (still requires per-row fuzzy logic)
     mappings = df["address"].apply(map_address_to_municipality)
     df["municipality_code"] = [m[0] for m in mappings]
     df["municipality_name"] = [m[1] for m in mappings]
-    df["region_code"] = df["municipality_code"].apply(get_region_code)
-    df["region_name"] = df["municipality_code"].apply(get_region_name)
-    df["rent_zone"] = df["municipality_code"].apply(get_rent_zone)
+
+    # Vectorized dict lookups instead of per-row apply
+    df["region_code"] = df["municipality_code"].map(_CODE_TO_REGION).fillna("00")
+    df["region_name"] = df["municipality_code"].map(_CODE_TO_REGION_NAME).fillna("Ukjent")
+    df["rent_zone"] = df["municipality_code"].map(_CODE_TO_ZONE).fillna("99")
 
     mapped = (df["municipality_code"] != "0000").sum()
     logger.info(f"[mapper] Mapped {mapped}/{len(df)} listings to municipalities")

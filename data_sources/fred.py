@@ -100,14 +100,15 @@ def _compute_m3_signals(series: pd.Series) -> dict:
             "m3_acceleration": np.nan,
         }
 
-    # YoY growth rate
-    if len(series) >= 12:
+    # YoY growth rate: requires 13 points (current + 12 months back)
+    if len(series) >= 13:
         yoy = float((series.iloc[-1] / series.iloc[-13] - 1) * 100)
     else:
         yoy = np.nan
 
     # Acceleration: compare recent 6m growth rate vs prior 6m
-    if len(series) >= 12:
+    # requires 13 points: iloc[-1], iloc[-7], iloc[-13]
+    if len(series) >= 13:
         recent_6m = float((series.iloc[-1] / series.iloc[-7] - 1) * 100)
         prior_6m = float((series.iloc[-7] / series.iloc[-13] - 1) * 100)
         acceleration = recent_6m - prior_6m

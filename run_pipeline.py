@@ -216,12 +216,12 @@ def step_fetch_regions(no_cache: bool) -> tuple:
     return features, rent_data, index_signals
 
 
-def step_scrape_finn(max_pages: int, max_listings: int = None) -> pd.DataFrame:
+def step_scrape_finn(max_pages: int, max_listings: int = None, location_params: str = "") -> pd.DataFrame:
     """Step 3: Scrape Finn.no listings."""
     _print_header("Step 3/5: Scraping Finn.no listings...")
 
     from scrapers.finn import scrape_listings
-    listings = scrape_listings(max_pages=max_pages, max_listings=max_listings)
+    listings = scrape_listings(max_pages=max_pages, max_listings=max_listings, location_params=location_params)
     logger.info(f"[pipeline] Scraped {len(listings)} listings from Finn.no")
     return listings
 
@@ -233,7 +233,7 @@ def step_enrich(listings: pd.DataFrame,
     """Step 4: Map listings to municipalities and join region data."""
     _print_header("Step 4/5: Enriching listings with region data...")
 
-    from mapping.region_mapper import enrich_listings_with_regions, estimate_rent_for_municipality
+    from mapping.region_mapper import enrich_listings_with_regions, estimate_rents_vectorized
 
     # Add municipality/region codes
     enriched = enrich_listings_with_regions(listings)
@@ -257,12 +257,7 @@ def step_enrich(listings: pd.DataFrame,
             )
 
     if not rent_data.empty:
-        enriched["estimated_monthly_rent"] = enriched.apply(
-            lambda row: estimate_rent_for_municipality(
-                row["municipality_code"], rent_data, row.get("sqm", 70)
-            ),
-            axis=1,
-        )
+        enriched["estimated_monthly_rent"] = estimate_rents_vectorized(enriched, rent_data)
         enriched["estimated_annual_rent"] = enriched["estimated_monthly_rent"] * 12
     else:
         enriched["estimated_monthly_rent"] = np.nan
@@ -302,12 +297,16 @@ def step_enrich(listings: pd.DataFrame,
         idx_data = index_signals[idx_cols].rename(columns=idx_rename)
         enriched = enriched.merge(idx_data, on="index_region_code", how="left")
 
-    # Compute gross yield (SSB rents are already conservative/below-market,
-    # so we treat them as approximate net figures without deducting felleskost)
+    # Compute gross yield — guard against zero/NaN total price to avoid silent NaN propagation
     if "total_price_calc" in enriched.columns and "estimated_annual_rent" in enriched.columns:
+        valid_price = enriched["total_price_calc"].replace(0, np.nan)
         enriched["gross_yield_pct"] = (
-            enriched["estimated_annual_rent"] / enriched["total_price_calc"] * 100
+            enriched["estimated_annual_rent"] / valid_price * 100
         ).replace([np.inf, -np.inf], np.nan).round(2)
+        nan_yield = enriched["gross_yield_pct"].isna().sum()
+        if nan_yield > 0:
+            logger.warning(f"[pipeline] {nan_yield}/{len(enriched)} listings have NaN yield "
+                           "(missing price or rent estimate) — they will score at dataset median")
 
     logger.info(f"[pipeline] Enriched {len(enriched)} listings with region data")
     return enriched
@@ -353,9 +352,21 @@ def main():
                         help="Cap on number of listings to fetch details for")
     parser.add_argument("--no-cache", action="store_true",
                         help="Force refresh SSB/FRED cached data")
+    parser.add_argument("--city", type=str, default=None,
+                        choices=["oslo", "bergen", "trondheim", "stavanger"],
+                        help="Filter listings to a specific Norwegian city")
     parser.add_argument("--export", type=str, default=None,
                         help="Export path for CSV (default: output/property_scores.csv)")
     args = parser.parse_args()
+
+    # Finn.no location params by city
+    _CITY_LOCATION_PARAMS = {
+        "oslo":       "location=0.20061",
+        "trondheim":  "lat=63.43049&lon=10.39506&radius=20000",
+        "bergen":     "lat=60.39130&lon=5.32210&radius=20000",
+        "stavanger":  "lat=58.97000&lon=5.73310&radius=15000",
+    }
+    location_params = _CITY_LOCATION_PARAMS.get(args.city, "") if args.city else ""
 
     start_time = time.time()
 
@@ -372,7 +383,7 @@ def main():
     region_features, rent_data, index_signals = step_fetch_regions(args.no_cache)
 
     # Step 3: Scrape Finn.no
-    listings = step_scrape_finn(args.max_pages, args.max_listings)
+    listings = step_scrape_finn(args.max_pages, args.max_listings, location_params)
 
     if listings.empty:
         logger.error("No listings scraped — cannot proceed. "
